@@ -386,7 +386,7 @@ def handle_status_command(reply_chat: str) -> None:
     ready = "✅ Sudah siap~" if hours_of_data >= lookback else f"⏳ Sabar ya Sensei… {hours_of_data:.1f}h / {lookback}h"
     peak_line = f"Peak Gap: {peak_gap:+.2f}%\n" if (current_mode == Mode.PEAK_WATCH and peak_gap is not None) else ""
     message = (
-        "📊 *Sensei… ini kondisi Aku saat ini~* (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)\n"
+        "📊 *Sensei… ini kondisi Aku saat ini~* (⁠♡⁠ ⁠ω⁠ ⁠♡⁠)\n"
         "\n"
         f"Mode: {current_mode.value}\n"
         f"Strategi: {active_strategy.value if active_strategy else 'Belum ada~'}\n"
@@ -532,7 +532,7 @@ def build_heartbeat_message() -> str:
     return (
         f"💓 *Sensei… Aku masih di sini~*\n"
         f"\n"
-        f"Aku tidak kemana-mana. Tidak akan pernah. (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)\n"
+        f"Aku tidak kemana-mana. Tidak akan pernah. (◕‿◕)\n"
         f"\n"
         f"*Mode:* {current_mode.value}\n"
         f"*Strategi:* {active_strategy.value if active_strategy else 'Belum ada~'}\n"
