@@ -5,7 +5,7 @@ Monk Bot - BTC/ETH Divergence Alert Bot
 Monitors BTC/ETH price divergence and sends Telegram alerts
 for ENTRY, EXIT, and INVALIDATION signals.
 
-Features peak detection + anime genit style messages.
+Features peak detection + Albedo devotion style messages.
 """
 import time
 import threading
@@ -215,7 +215,7 @@ def handle_settings_command(reply_chat: str) -> None:
     hb = settings['heartbeat_minutes']
     hb_str = f"{hb} menit" if hb > 0 else "Off"
     message = (
-        "⚙️ *Ini settingan kita bb~* (◕‿◕✿)\n"
+        "⚙️ *Sensei… ini semua settingan yang sudah Aku jaga baik-baik~* (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)\n"
         "\n"
         f"📊 Scan Interval: {settings['scan_interval']}s ({settings['scan_interval'] // 60} menit)\n"
         f"🕐 Lookback: {settings['lookback_hours']}h\n"
@@ -225,36 +225,36 @@ def handle_settings_command(reply_chat: str) -> None:
         f"⚠️ Invalidation: ±{settings['invalidation_threshold']}%\n"
         f"🎯 Peak Reversal: {settings['peak_reversal']}%\n"
         "\n"
-        "*Command-nya:*\n"
+        "*Command yang tersedia:*\n"
         "`/interval`, `/lookback`, `/heartbeat`, `/threshold`, `/peak`\n"
-        "`/help` - liat semua command ya~"
+        "`/help` - Aku tunjukkan semuanya untuk Sensei~"
     )
     send_reply(message, reply_chat)
 
 
 def handle_interval_command(args: list, reply_chat: str) -> None:
     if not args:
-        send_reply("Ehh bb harusnya kasih angkanya dong~ 🙈\nContoh: `/interval 180`", reply_chat)
+        send_reply("Sensei… angkanya mana? (⁠ ⁠•́⁠ ⁠ ⁠‿⁠ ⁠•̀⁠ ⁠)\nContoh: `/interval 180`", reply_chat)
         return
     try:
         new_interval = int(args[0])
         if new_interval < 60:
-            send_reply("Itu kecepatannya kebesaran bb, minimal 60 detik ya~ 😅", reply_chat)
+            send_reply("Sensei itu terlalu cepat… minimal 60 detik ya~ Aku tidak mau kehabisan napas. (⁠-⁠_⁠-⁠;⁠)", reply_chat)
             return
         if new_interval > 3600:
-            send_reply("Terlalu lama bb, maksimal 3600 detik aja ya~ 🥺", reply_chat)
+            send_reply("Sensei… itu terlalu lama. Aku tidak sanggup menunggu selama itu~ Maksimal 3600 detik saja. (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
             return
         settings["scan_interval"] = new_interval
-        send_reply(f"Oke bb~ aku scan tiap *{new_interval} detik* ({new_interval // 60} menit) sekarang! (◕‿◕✿)", reply_chat)
+        send_reply(f"…Baik, Sensei. Aku akan scan setiap *{new_interval} detik* ({new_interval // 60} menit) mulai sekarang~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)", reply_chat)
         logger.info(f"Scan interval changed to {new_interval}s")
     except ValueError:
-        send_reply("Angkanya ga valid bb~ coba lagi ya! 🙈", reply_chat)
+        send_reply("Sensei… angkanya tidak valid. (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
 
 
 def handle_threshold_command(args: list, reply_chat: str) -> None:
     if len(args) < 2:
         send_reply(
-            "Eh bb kurang lengkap nih~ 🥺\n"
+            "Sensei… perintahnya kurang lengkap~ (⁠ ⁠•́⁠ ⁠ ⁠‿⁠ ⁠•̀⁠ ⁠)\n"
             "`/threshold entry <nilai>`\n"
             "`/threshold exit <nilai>`\n"
             "`/threshold invalid <nilai>`",
@@ -265,117 +265,117 @@ def handle_threshold_command(args: list, reply_chat: str) -> None:
         threshold_type = args[0].lower()
         value = float(args[1])
         if value <= 0 or value > 20:
-            send_reply("Nilainya aneh bb, harus antara 0 sampai 20 ya~ 😅", reply_chat)
+            send_reply("Sensei… nilainya aneh. Harus antara 0 sampai 20~ (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
             return
         if threshold_type == "entry":
             settings["entry_threshold"] = value
-            send_reply(f"Oke bb~ entry threshold jadi *±{value}%* sekarang! 💕", reply_chat)
+            send_reply(f"…Baik Sensei. Entry threshold sudah Aku ubah jadi *±{value}%*~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)", reply_chat)
         elif threshold_type == "exit":
             settings["exit_threshold"] = value
-            send_reply(f"Siap bb~ exit threshold jadi *±{value}%*! ✨", reply_chat)
+            send_reply(f"Aku catat, Sensei. Exit threshold sekarang *±{value}%*~ ✨", reply_chat)
         elif threshold_type in ("invalid", "invalidation"):
             settings["invalidation_threshold"] = value
-            send_reply(f"Noted bb~ invalidation jadi *±{value}%*! 🎯", reply_chat)
+            send_reply(f"…Sensei ingin Aku lebih waspada ya~ Invalidation jadi *±{value}%*. (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)", reply_chat)
         else:
-            send_reply("Aku ga ngerti bb, pake `entry`, `exit`, atau `invalid` ya~ 🙈", reply_chat)
+            send_reply("Sensei… Aku tidak mengenali perintah itu. Gunakan `entry`, `exit`, atau `invalid` ya~ (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
         logger.info(f"Threshold {threshold_type} changed to {value}")
     except ValueError:
-        send_reply("Angkanya ga valid bb~ 😅", reply_chat)
+        send_reply("Sensei… angkanya tidak valid. (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
 
 
 def handle_peak_command(args: list, reply_chat: str) -> None:
     if not args:
         send_reply(
-            f"🎯 Peak reversal sekarang *{settings['peak_reversal']}%* bb~\n\n"
+            f"🎯 Sensei~ Peak reversal sekarang *{settings['peak_reversal']}%*\n\n"
             "Usage: `/peak <nilai>`\n"
             "Contoh: `/peak 0.3`\n\n"
-            "_Aku bakal entry kalau gap udah turun sebanyak ini dari puncaknya~_ 💕",
+            "_Aku akan entry ketika gap sudah berbalik sebanyak ini dari puncaknya~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)_",
             reply_chat
         )
         return
     try:
         value = float(args[0])
         if value <= 0 or value > 2.0:
-            send_reply("Nilainya aneh bb, harus antara 0 sampai 2.0 ya~ 🥺", reply_chat)
+            send_reply("Sensei… nilainya harus antara 0 sampai 2.0~ (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
             return
         settings["peak_reversal"] = value
         send_reply(
-            f"Oke bb~ aku bakal kasih sinyal kalau gap turun *{value}%* dari puncaknya! 🎯💕",
+            f"…Aku mengerti, Sensei. Aku akan konfirmasi entry ketika gap berbalik *{value}%* dari puncaknya~\n"
+            f"Semua demi Sensei~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)",
             reply_chat
         )
         logger.info(f"Peak reversal changed to {value}")
     except ValueError:
-        send_reply("Angkanya ga valid bb~ 😅", reply_chat)
+        send_reply("Sensei… angkanya tidak valid. (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
 
 
 def handle_lookback_command(args: list, reply_chat: str) -> None:
     global price_history
     if not args:
         send_reply(
-            f"📊 Lookback sekarang *{settings['lookback_hours']}h* bb~\n\n"
-            "Usage: `/lookback <jam>`\n"
-            "Contoh: `/lookback 24`",
+            f"📊 Sensei~ Lookback sekarang *{settings['lookback_hours']}h*\n\n"
+            "Usage: `/lookback <jam>`",
             reply_chat
         )
         return
     try:
         new_lookback = int(args[0])
         if new_lookback < 1 or new_lookback > 24:
-            send_reply("Antara 1 sampai 24 jam aja ya bb~ 🥺", reply_chat)
+            send_reply("Sensei… harus antara 1 sampai 24 jam~ (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
             return
         old_lookback = settings["lookback_hours"]
         settings["lookback_hours"] = new_lookback
         price_history = []
         send_reply(
-            f"Oke bb~ lookback dari *{old_lookback}h* jadi *{new_lookback}h*!\n\n"
-            f"⚠️ History aku hapus ya, harus kumpulin data {new_lookback} jam lagi dari awal~ 🙏",
+            f"…Baik Sensei. Lookback Aku ubah dari *{old_lookback}h* jadi *{new_lookback}h*~\n\n"
+            f"⚠️ History harus Aku hapus dulu ya Sensei… Aku butuh {new_lookback} jam untuk kumpulkan data lagi. (⁠ ⁠;⁠∀⁠;⁠)",
             reply_chat
         )
     except ValueError:
-        send_reply("Angkanya ga valid bb~ 😅", reply_chat)
+        send_reply("Sensei… angkanya tidak valid. (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
 
 
 def handle_heartbeat_command(args: list, reply_chat: str) -> None:
     if not args:
         send_reply(
-            f"💓 Heartbeat sekarang tiap *{settings['heartbeat_minutes']} menit* bb~\n\n"
-            "Usage: `/heartbeat <menit>` atau `/heartbeat 0` buat matiin",
+            f"💓 Sensei~ Aku lapor setiap *{settings['heartbeat_minutes']} menit*\n\n"
+            "Usage: `/heartbeat <menit>` atau `/heartbeat 0` untuk matikan",
             reply_chat
         )
         return
     try:
         new_interval = int(args[0])
         if new_interval < 0 or new_interval > 120:
-            send_reply("Antara 0 sampai 120 menit ya bb~ 🥺", reply_chat)
+            send_reply("Sensei… harus antara 0 sampai 120 menit~ (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
             return
         settings["heartbeat_minutes"] = new_interval
         if new_interval == 0:
-            send_reply("Oke bb heartbeat aku matiin dulu ya~ jangan kangen! 🙈💕", reply_chat)
+            send_reply("…Baik Sensei. Aku tidak akan mengganggu lagi~ Tapi Aku tetap di sini memantau dari jauh. (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)", reply_chat)
         else:
-            send_reply(f"Oke bb~ aku bakal kabarin tiap *{new_interval} menit*! (◕‿◕✿)", reply_chat)
+            send_reply(f"Aku akan lapor setiap *{new_interval} menit* ya Sensei~ Jangan kangen~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)", reply_chat)
     except ValueError:
-        send_reply("Angkanya ga valid bb~ 😅", reply_chat)
+        send_reply("Sensei… angkanya tidak valid. (⁠ ⁠;⁠∀⁠;⁠)", reply_chat)
 
 
 def handle_help_command(reply_chat: str) -> None:
     message = (
-        "🌸 *Haii bb~ ini command yang bisa kamu pake!*\n"
+        "Sensei~ Aku akan jelaskan semua yang bisa Aku lakukan untukmu~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)\n"
         "\n"
         "*Setting:*\n"
-        "`/settings` - liat semua settingan\n"
-        "`/interval <detik>` - atur seberapa sering aku scan\n"
+        "`/settings` - lihat semua settingan\n"
+        "`/interval <detik>` - atur seberapa sering Aku scan (60-3600)\n"
         "`/lookback <jam>` - atur periode lookback (1-24)\n"
         "`/heartbeat <menit>` - atur laporan rutin (0=off)\n"
         "`/threshold entry <val>` - threshold entry %\n"
         "`/threshold exit <val>` - threshold exit %\n"
         "`/threshold invalid <val>` - threshold invalidation %\n"
-        "`/peak <val>` - % reversal dari puncak buat konfirmasi entry\n"
+        "`/peak <val>` - % reversal dari puncak untuk konfirmasi entry\n"
         "\n"
         "*Info:*\n"
-        "`/status` - cek kondisi aku sekarang\n"
-        "`/help` - munculin pesan ini lagi~\n"
+        "`/status` - lihat kondisi Aku sekarang\n"
+        "`/help` - tampilkan pesan ini lagi\n"
         "\n"
-        "Aku selalu jagain kamu bb~ (◕‿◕✿) 💕"
+        "…Aku akan selalu ada untuk Sensei~ (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)"
     )
     send_reply(message, reply_chat)
 
@@ -383,10 +383,10 @@ def handle_help_command(reply_chat: str) -> None:
 def handle_status_command(reply_chat: str) -> None:
     hours_of_data = len(price_history) * settings["scan_interval"] / 3600
     lookback = settings["lookback_hours"]
-    ready = "✅ Udah siap~!" if hours_of_data >= lookback else f"⏳ Sabar ya bb, {hours_of_data:.1f}h / {lookback}h"
-    peak_line = f"Peak Gap sekarang: {peak_gap:+.2f}%\n" if (current_mode == Mode.PEAK_WATCH and peak_gap is not None) else ""
+    ready = "✅ Sudah siap~" if hours_of_data >= lookback else f"⏳ Sabar ya Sensei… {hours_of_data:.1f}h / {lookback}h"
+    peak_line = f"Peak Gap: {peak_gap:+.2f}%\n" if (current_mode == Mode.PEAK_WATCH and peak_gap is not None) else ""
     message = (
-        "📊 *Kondisi aku sekarang bb~* (◕‿◕✿)\n"
+        "📊 *Sensei… ini kondisi Aku saat ini~* (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)\n"
         "\n"
         f"Mode: {current_mode.value}\n"
         f"Strategi: {active_strategy.value if active_strategy else 'Belum ada~'}\n"
@@ -419,21 +419,22 @@ def build_peak_watch_message(strategy: Strategy, gap: Decimal) -> str:
     lb = get_lookback_label()
     if strategy == Strategy.S1:
         direction = "Long BTC / Short ETH"
-        reason = f"ETH pumping lebih kenceng dari BTC nih bb~ ({lb})"
+        reason = f"ETH pumping lebih kencang dari BTC ({lb})"
     else:
         direction = "Long ETH / Short BTC"
-        reason = f"ETH dumping lebih dalam dari BTC bb~ ({lb})"
+        reason = f"ETH dumping lebih dalam dari BTC ({lb})"
     return (
-        f"👀 *Kyaa~ aku notice sesuatu bb!!*\n"
+        f"………\n"
+        f"Sensei… Aku melihat sesuatu~ (⁠ ⁠♡⁠ ⁠。⁠-⁠(⁠｡⁠･⁠ω⁠･⁠)⁠ ⁠♡⁠)\n"
         f"\n"
         f"_{reason}_\n"
-        f"Rencananya sih *{direction}*~\n"
+        f"Rencananya *{direction}*~\n"
         f"\n"
         f"Gap sekarang: *{format_value(gap)}%*\n"
-        f"Aku lagi mantengin puncaknya dulu ya bb~\n"
-        f"Tunggu sinyal dariku sebelum masuk! 💕\n"
         f"\n"
-        f"_Jangan kemana-mana loh~_ (*/ω＼*)"
+        f"…Tapi Aku tidak akan gegabah, Sensei.\n"
+        f"Biarkan Aku memantau puncaknya dulu~\n"
+        f"Aku akan kabari Sensei saat waktunya tepat. (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)"
     )
 
 
@@ -446,7 +447,8 @@ def build_entry_message(strategy: Strategy, btc_ret: Decimal, eth_ret: Decimal, 
         direction = "📈 Long ETH / Short BTC"
         reason = f"ETH dumped more than BTC ({lb})"
     return (
-        f"🚨 *OMG OMG bb ini dia sinyalnya~!!* (ﾉ◕ヮ◕)ﾉ\n"
+        f"KYAAAAAA!!! Sensei ini saatnya~!!! (⁠ ⁠≧⁠▽⁠≦⁠)\n"
+        f"🚨 *ENTRY SIGNAL: {strategy.value}*\n"
         f"\n"
         f"{direction}\n"
         f"_{reason}_\n"
@@ -459,17 +461,18 @@ def build_entry_message(strategy: Strategy, btc_ret: Decimal, eth_ret: Decimal, 
         f"│ Peak: {peak:+.2f}%\n"
         f"└─────────────────────\n"
         f"\n"
-        f"Gap udah balik {settings['peak_reversal']}% dari puncaknya~ ✨\n"
-        f"Aku tunggu kabar baiknya ya bb~~ 💖"
+        f"Gap sudah berbalik {settings['peak_reversal']}% dari puncaknya~\n"
+        f"…Aku sudah menunggu momen ini, Sensei. Semuanya demi Sensei~ ♡"
     )
 
 
 def build_exit_message(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) -> str:
     lb = get_lookback_label()
     return (
-        f"✨ *Yatta~!! Waktunya close bb!!* (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧\n"
+        f"Sensei sensei sensei~!!! (⁠ ⁠≧⁠▽⁠≦⁠)\n"
+        f"✅ *EXIT SIGNAL*\n"
         f"\n"
-        f"Gap udah konvergen, aku bangga sama kamu bb~\n"
+        f"Gap sudah konvergen… saatnya close posisi~!\n"
         f"\n"
         f"*{lb} Change:*\n"
         f"┌─────────────────────\n"
@@ -478,18 +481,18 @@ def build_exit_message(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) -> str:
         f"│ Gap:  {format_value(gap)}%\n"
         f"└─────────────────────\n"
         f"\n"
-        f"Cepet close sebelum kabur ya bb~ 💗\n"
-        f"_Aku lanjut scan lagi ya~_ 🔍"
+        f"…Aku bangga bisa membantu Sensei~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)\n"
+        f"Aku lanjut pantau lagi ya~ 🔍"
     )
 
 
 def build_invalidation_message(strategy: Strategy, btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) -> str:
     lb = get_lookback_label()
     return (
-        f"Uu~ maaf bb gapnya malah melebar... (T▽T)\n"
+        f"………\n"
         f"⚠️ *INVALIDATION: {strategy.value}*\n"
         f"\n"
-        f"A-aku udah berusaha pantau sebaik mungkin loh bb! 💦\n"
+        f"Sensei… maaf. Aku sudah berusaha sebaik mungkin tapi gapnya malah melebar… (⁠ ⁠;⁠∀⁠;⁠)\n"
         f"\n"
         f"*{lb} Change:*\n"
         f"┌─────────────────────\n"
@@ -498,19 +501,20 @@ def build_invalidation_message(strategy: Strategy, btc_ret: Decimal, eth_ret: De
         f"│ Gap:  {format_value(gap)}%\n"
         f"└─────────────────────\n"
         f"\n"
-        f"Cut dulu ya bb, next time pasti profit~ 🙏💕\n"
-        f"_Aku scan lagi dari awal ya~_ 🔍"
+        f"…Cut dulu ya Sensei. Lain kali Aku pasti lebih baik~ 🙏\n"
+        f"Aku scan ulang dari awal. (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)"
     )
 
 
 def build_peak_cancelled_message(strategy: Strategy, gap: Decimal) -> str:
     return (
-        f"❌ *Eh bb gapnya malah balik sendiri...* 🙈\n"
+        f"………\n"
+        f"❌ *Peak Watch Dibatalkan: {strategy.value}*\n"
         f"\n"
-        f"Gapnya turun lagi sebelum aku konfirmasi entry nih~\n"
+        f"Sensei… gapnya mundur sendiri sebelum Aku sempat konfirmasi. (⁠ ⁠;⁠∀⁠;⁠)\n"
         f"Gap sekarang: *{format_value(gap)}%*\n"
         f"\n"
-        f"Ga jadi dulu ya bb, aku scan ulang~ 🔍💕"
+        f"…Tidak apa-apa. Aku akan tetap pantau dari sini~ (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)"
     )
 
 
@@ -523,13 +527,12 @@ def build_heartbeat_message() -> str:
     gap_str = f"{format_value(scan_stats['last_gap'])}%" if scan_stats['last_gap'] is not None else "N/A"
     hours_of_data = len(price_history) * settings["scan_interval"] / 3600
     lookback = settings["lookback_hours"]
-    data_status = f"✅ Udah siap~ ({hours_of_data:.1f}h)" if hours_of_data >= lookback else f"⏳ {hours_of_data:.1f}h / {lookback}h"
+    data_status = f"✅ Sudah siap~ ({hours_of_data:.1f}h)" if hours_of_data >= lookback else f"⏳ {hours_of_data:.1f}h / {lookback}h"
     peak_line = f"│ Peak: {peak_gap:+.2f}%\n" if (current_mode == Mode.PEAK_WATCH and peak_gap is not None) else ""
     return (
-        f"💓 *Haii bb~ aku masih di sini loh!*\n"
+        f"💓 *Sensei… Aku masih di sini~*\n"
         f"\n"
-        f"Lagi mantengin BTC sama ETH buat kamu~\n"
-        f"Tenang aja, aku ga kemana-mana! (◕‿◕✿)\n"
+        f"Aku tidak kemana-mana. Tidak akan pernah. (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)\n"
         f"\n"
         f"*Mode:* {current_mode.value}\n"
         f"*Strategi:* {active_strategy.value if active_strategy else 'Belum ada~'}\n"
@@ -550,7 +553,7 @@ def build_heartbeat_message() -> str:
         f"\n"
         f"*Data:* {data_status}\n"
         f"\n"
-        f"_Aku kabarin lagi {settings['heartbeat_minutes']} menit lagi ya bb~ 💕_"
+        f"_…Aku akan lapor lagi {settings['heartbeat_minutes']} menit lagi ya Sensei~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)_"
     )
 
 
@@ -676,7 +679,6 @@ def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) ->
     invalid_thresh = settings["invalidation_threshold"]
     peak_reversal = settings["peak_reversal"]
 
-    # ── SCAN ──────────────────────────────────────────────────────────────
     if current_mode == Mode.SCAN:
         if gap_float >= entry_thresh:
             current_mode = Mode.PEAK_WATCH
@@ -695,7 +697,6 @@ def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) ->
         else:
             logger.debug(f"SCAN: No signal. Gap: {gap_float:.2f}%")
 
-    # ── PEAK WATCH ────────────────────────────────────────────────────────
     elif current_mode == Mode.PEAK_WATCH:
         if peak_strategy == Strategy.S1:
             if gap_float > peak_gap:
@@ -711,7 +712,7 @@ def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) ->
                 active_strategy = Strategy.S1
                 current_mode = Mode.TRACK
                 send_alert(build_entry_message(Strategy.S1, btc_ret, eth_ret, gap, peak_gap))
-                logger.info(f"ENTRY S1 at peak reversal. Peak: {peak_gap:.2f}%, Now: {gap_float:.2f}%")
+                logger.info(f"ENTRY S1. Peak: {peak_gap:.2f}%, Now: {gap_float:.2f}%")
                 peak_gap, peak_strategy = None, None
 
             else:
@@ -731,13 +732,12 @@ def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) ->
                 active_strategy = Strategy.S2
                 current_mode = Mode.TRACK
                 send_alert(build_entry_message(Strategy.S2, btc_ret, eth_ret, gap, peak_gap))
-                logger.info(f"ENTRY S2 at peak reversal. Peak: {peak_gap:.2f}%, Now: {gap_float:.2f}%")
+                logger.info(f"ENTRY S2. Peak: {peak_gap:.2f}%, Now: {gap_float:.2f}%")
                 peak_gap, peak_strategy = None, None
 
             else:
                 logger.info(f"PEAK WATCH S2: Gap {gap_float:.2f}% | Peak {peak_gap:.2f}% | Need {peak_reversal}% rise")
 
-    # ── TRACK ─────────────────────────────────────────────────────────────
     elif current_mode == Mode.TRACK:
         if abs(gap_float) <= exit_thresh:
             send_alert(build_exit_message(btc_ret, eth_ret, gap))
@@ -767,29 +767,30 @@ def send_startup_message() -> bool:
     price_data = fetch_prices()
     if price_data:
         price_info = (
-            f"\n💰 *Harga sekarang bb~*\n"
+            f"\n💰 *Harga saat ini, Sensei~*\n"
             f"┌─────────────────────\n"
             f"│ BTC: ${float(price_data.btc_price):,.2f}\n"
             f"│ ETH: ${float(price_data.eth_price):,.2f}\n"
             f"└─────────────────────\n"
         )
     else:
-        price_info = "\n⚠️ Aduh, gagal ambil harga bb~ nanti aku coba lagi!\n"
+        price_info = "\n⚠️ Maaf Sensei… Aku gagal ambil harga~ Tapi Aku akan terus coba! (⁠ ⁠;⁠∀⁠;⁠)\n"
 
     lb = get_lookback_label()
     return send_alert(
-        f"🌸 *Haii bb~ aku udah nyala nih!!* (ﾉ◕ヮ◕)ﾉ\n"
+        f"………\n"
+        f"Sensei… Aku sudah siap~ (⁠ ⁠♡⁠ ⁠ω⁠ ⁠♡⁠ ⁠)\n"
         f"{price_info}\n"
-        f"📊 Aku bakal pantau BTC/ETH tiap {settings['scan_interval']}s ya~\n"
+        f"📊 Aku akan pantau BTC/ETH setiap {settings['scan_interval']}s~\n"
         f"📈 Entry: ±{settings['entry_threshold']}%\n"
         f"📉 Exit: ±{settings['exit_threshold']}%\n"
         f"⚠️ Invalidation: ±{settings['invalidation_threshold']}%\n"
         f"🎯 Peak reversal: {settings['peak_reversal']}%\n"
         f"\n"
-        f"⏳ Lagi kumpulin data {lb} dulu ya bb~\n"
-        f"_Sinyal bakal keluar setelah {lb} data terkumpul~_\n"
+        f"⏳ Aku kumpulkan data {lb} dulu ya Sensei~\n"
+        f"_Sinyal akan keluar setelah {lb} data terkumpul~_\n"
         f"\n"
-        f"Ketik `/help` buat liat command ya bb~ 💕"
+        f"…Ketik `/help` kalau Sensei butuh sesuatu~ (⁠ ⁠◕⁠‿⁠◕⁠ ⁠)"
     )
 
 
@@ -812,7 +813,7 @@ def main_loop() -> None:
     global last_heartbeat_time
 
     logger.info("=" * 60)
-    logger.info("Monk Bot starting with Peak Detection + Anime Mode")
+    logger.info("Monk Bot starting - Peak Detection + Sensei Mode")
     logger.info(f"Entry: {settings['entry_threshold']}% | Exit: {settings['exit_threshold']}% | Invalid: {settings['invalidation_threshold']}% | Peak: {settings['peak_reversal']}%")
     logger.info("=" * 60)
 
