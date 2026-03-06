@@ -218,8 +218,7 @@ def load_history() -> None:
         ]
         logger.info(f"Loaded {len(price_history)} points from Redis")
     except Exception as e:
-        logger.warning(f"Failed to load history from Redis: {e}")
-        price_history = []
+        logger.warning(f"Failed to load history from Redis: {e} — keeping existing history")
 
 
 # =============================================================================
