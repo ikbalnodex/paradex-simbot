@@ -250,6 +250,8 @@ def process_commands() -> None:
             handle_help_command(reply_chat)
         elif command == "/status":
             handle_status_command(reply_chat)
+        elif command == "/redis":
+            handle_redis_command(reply_chat)
         elif command == "/lookback":
             handle_lookback_command(args, reply_chat)
         elif command == "/heartbeat":
@@ -484,6 +486,60 @@ def handle_heartbeat_command(args: list, reply_chat: str) -> None:
         send_reply("Ara ara~ angkanya tidak valid, sayangku. (◕ω◕)", reply_chat)
 
 
+def handle_redis_command(reply_chat: str) -> None:
+    if not UPSTASH_REDIS_URL:
+        send_reply(
+            "⚠️ Ara ara~ Redis belum dikonfigurasi, sayangku.\n"
+            "Pastikan `UPSTASH_REDIS_REST_URL` dan `UPSTASH_REDIS_REST_TOKEN` sudah diisi di Railway~ (◕ω◕)",
+            reply_chat
+        )
+        return
+    result = _redis_request("GET", f"/get/{REDIS_KEY}")
+    if not result or result.get("result") is None:
+        send_reply(
+            "❌ *Tidak ada data di Redis~*\n\n"
+            "Ara ara... Akeno belum sempat simpan apa-apa.\n"
+            "Tunggu beberapa menit ya sayangku, data sedang dikumpulkan~ (◕ω◕)",
+            reply_chat
+        )
+        return
+    try:
+        data = json.loads(result["result"])
+        if not data:
+            send_reply(
+                "❌ Redis ada tapi isinya kosong~\n"
+                "Ara ara... sepertinya baru saja di-reset. (◕ω◕)",
+                reply_chat
+            )
+            return
+        first_ts = data[0]["timestamp"]
+        last_ts = data[-1]["timestamp"]
+        hours_stored = len(data) * settings["scan_interval"] / 3600
+        lookback = settings["lookback_hours"]
+        status = "✅ Siap kirim sinyal~" if hours_stored >= lookback else f"⏳ {hours_stored:.1f}h / {lookback}h"
+        send_reply(
+            f"⚡ *Status Redis — Akeno cek buat kamu~* Ufufufu... (◕‿◕)\n"
+            f"\n"
+            f"┌─────────────────────\n"
+            f"│ Total data points: *{len(data)}*\n"
+            f"│ History tersimpan: *{hours_stored:.1f}h*\n"
+            f"│ Lookback target: *{lookback}h*\n"
+            f"│ Status: {status}\n"
+            f"└─────────────────────\n"
+            f"\n"
+            f"Data pertama: `{first_ts}`\n"
+            f"Data terakhir: `{last_ts}`\n"
+            f"\n"
+            f"_Akeno simpan semua baik-baik di Redis untukmu~ ⚡_",
+            reply_chat
+        )
+    except Exception as e:
+        send_reply(
+            f"⚠️ Ara ara~ Data ada tapi Akeno gagal baca: `{e}` (◕ω◕)",
+            reply_chat
+        )
+
+
 def handle_help_command(reply_chat: str) -> None:
     message = (
         "Ara ara~ mau tahu semua yang bisa Akeno lakukan untukmu? Ufufufu... (◕‿◕)\n"
@@ -500,6 +556,7 @@ def handle_help_command(reply_chat: str) -> None:
         "\n"
         "*Info:*\n"
         "`/status` - lihat kondisi Akeno sekarang\n"
+        "`/redis` - cek data history yang tersimpan di Redis\n"
         "`/help` - tampilkan pesan ini lagi\n"
         "\n"
         "Selama kamu di sini, Akeno akan selalu menempel erat~ "
