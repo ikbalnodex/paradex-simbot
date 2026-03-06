@@ -5,7 +5,7 @@ Monk Bot - BTC/ETH Divergence Alert Bot
 Monitors BTC/ETH price divergence and sends Telegram alerts
 for ENTRY, EXIT, and INVALIDATION signals.
 
-Features peak detection + Akeno devotion style messages.
+Features peak detection + trailing SL/TP + Akeno devotion style messages.
 """
 import json
 import os
@@ -79,6 +79,10 @@ active_strategy: Optional[Strategy] = None
 peak_gap: Optional[float] = None
 peak_strategy: Optional[Strategy] = None
 
+# [NEW] State untuk SL/TP + Trailing
+entry_gap_value = None    # gap (float) saat ENTRY terpicu
+trailing_gap_best = None  # gap terbaik sejak entry (untuk trailing SL)
+
 settings = {
     "scan_interval": SCAN_INTERVAL_SECONDS,
     "entry_threshold": ENTRY_THRESHOLD,
@@ -87,6 +91,9 @@ settings = {
     "peak_reversal": 0.3,
     "lookback_hours": DEFAULT_LOOKBACK_HOURS,
     "heartbeat_minutes": 30,
+    # [NEW] TP dan Trailing SL distance
+    "tp_pct": 1.0,
+    "sl_pct": 1.0,
 }
 
 last_update_id: int = 0
@@ -223,6 +230,7 @@ def get_telegram_updates() -> list:
     return []
 
 
+# [EDITED] process_commands — tambah route /sltp
 def process_commands() -> None:
     updates = get_telegram_updates()
     for update in updates:
@@ -258,6 +266,8 @@ def process_commands() -> None:
             handle_heartbeat_command(args, reply_chat)
         elif command == "/peak":
             handle_peak_command(args, reply_chat)
+        elif command == "/sltp":                       # [NEW] route
+            handle_sltp_command(args, reply_chat)
         elif command == "/start":
             handle_help_command(reply_chat)
 
@@ -283,6 +293,7 @@ def send_reply(message: str, chat_id: str) -> bool:
         return False
 
 
+# [EDITED] handle_settings_command — tambah baris TP/SL
 def handle_settings_command(reply_chat: str) -> None:
     hb = settings['heartbeat_minutes']
     hb_str = f"{hb} menit" if hb > 0 else "Off"
@@ -296,9 +307,11 @@ def handle_settings_command(reply_chat: str) -> None:
         f"📉 Exit Threshold: ±{settings['exit_threshold']}%\n"
         f"⚠️ Invalidation: ±{settings['invalidation_threshold']}%\n"
         f"🎯 Peak Reversal: {settings['peak_reversal']}%\n"
+        f"✅ TP: {settings['tp_pct']}% dari entry gap\n"           # [NEW]
+        f"🛑 Trailing SL: {settings['sl_pct']}% dari gap terbaik\n"  # [NEW]
         "\n"
         "*Command yang tersedia:*\n"
-        "`/interval`, `/lookback`, `/heartbeat`, `/threshold`, `/peak`\n"
+        "`/interval`, `/lookback`, `/heartbeat`, `/threshold`, `/peak`, `/sltp`\n"
         "`/help` — Akeno jelaskan semuanya untukmu~ (◕‿◕)"
     )
     send_reply(message, reply_chat)
@@ -416,6 +429,78 @@ def handle_peak_command(args: list, reply_chat: str) -> None:
             reply_chat
         )
         logger.info(f"Peak reversal changed to {value}")
+    except ValueError:
+        send_reply("Ara ara~ angkanya tidak valid, sayangku. (◕ω◕)", reply_chat)
+
+
+# [NEW] handle_sltp_command
+def handle_sltp_command(args: list, reply_chat: str) -> None:
+    if not args:
+        # Tampilkan TSL level real-time kalau sedang TRACK
+        trailing_sl_now = ""
+        if current_mode == Mode.TRACK and trailing_gap_best is not None and active_strategy is not None:
+            if active_strategy == Strategy.S1:
+                tsl = trailing_gap_best + settings["sl_pct"]
+            else:
+                tsl = trailing_gap_best - settings["sl_pct"]
+            trailing_sl_now = f"\n*Trailing SL sekarang:* `{tsl:+.2f}%` (best gap: `{trailing_gap_best:+.2f}%`)"
+
+        entry_info = (
+            f"\n*Entry gap:* `{entry_gap_value:+.2f}%`"
+            if entry_gap_value is not None else ""
+        )
+        send_reply(
+            f"🎯 *SL/TP Otomatis + Trailing SL — Akeno yang jaga~* Ufufufu... (◕‿◕)\n"
+            f"\n"
+            f"TP: *{settings['tp_pct']}%* dari entry gap\n"
+            f"Trailing SL distance: *{settings['sl_pct']}%* dari gap terbaik\n"
+            f"{entry_info}"
+            f"{trailing_sl_now}\n"
+            f"\n"
+            f"*Cara kerja Trailing SL:*\n"
+            f"S1 → TSL ikut turun kalau gap konvergen, jarak tetap {settings['sl_pct']}%\n"
+            f"S2 → TSL ikut naik kalau gap konvergen, jarak tetap {settings['sl_pct']}%\n"
+            f"\n"
+            f"Usage:\n"
+            f"`/sltp tp <nilai>` — ubah TP %\n"
+            f"`/sltp sl <nilai>` — ubah trailing SL distance %",
+            reply_chat,
+        )
+        return
+
+    if len(args) < 2:
+        send_reply(
+            "Ara ara~ kurang lengkap~ `/sltp tp <nilai>` atau `/sltp sl <nilai>` ya~ (◕ω◕)",
+            reply_chat,
+        )
+        return
+
+    try:
+        key = args[0].lower()
+        value = float(args[1])
+        if value <= 0 or value > 10:
+            send_reply(
+                "Ara ara~ nilainya harus antara 0 sampai 10~ (◕ω◕)",
+                reply_chat,
+            )
+            return
+        if key == "tp":
+            settings["tp_pct"] = value
+            send_reply(
+                f"Ufufufu~ TP sekarang *{value}%* dari entry gap~ "
+                f"Akeno catat baik-baik untukmu~ (◕‿◕)",
+                reply_chat,
+            )
+        elif key == "sl":
+            settings["sl_pct"] = value
+            send_reply(
+                f"Ara ara~ Trailing SL distance sekarang *{value}%*~ "
+                f"Akeno ikutin terus gap terbaiknya ya, sayangku~ (◕‿◕)",
+                reply_chat,
+            )
+        else:
+            send_reply("Gunakan `tp` atau `sl` ya~ (◕ω◕)", reply_chat)
+        logger.info(f"SL/TP {key} changed to {value}")
     except ValueError:
         send_reply("Ara ara~ angkanya tidak valid, sayangku. (◕ω◕)", reply_chat)
 
@@ -540,6 +625,7 @@ def handle_redis_command(reply_chat: str) -> None:
         )
 
 
+# [EDITED] handle_help_command — tambah /sltp
 def handle_help_command(reply_chat: str) -> None:
     message = (
         "Ara ara~ mau tahu semua yang bisa Akeno lakukan untukmu? Ufufufu... (◕‿◕)\n"
@@ -553,6 +639,9 @@ def handle_help_command(reply_chat: str) -> None:
         "`/threshold exit <val>` - threshold exit %\n"
         "`/threshold invalid <val>` - threshold invalidation %\n"
         "`/peak <val>` - % reversal dari puncak untuk konfirmasi entry\n"
+        "`/sltp` - lihat TP & Trailing SL aktif\n"              # [NEW]
+        "`/sltp tp <val>` - ubah TP %\n"                         # [NEW]
+        "`/sltp sl <val>` - ubah trailing SL distance %\n"       # [NEW]
         "\n"
         "*Info:*\n"
         "`/status` - lihat kondisi Akeno sekarang\n"
@@ -565,6 +654,7 @@ def handle_help_command(reply_chat: str) -> None:
     send_reply(message, reply_chat)
 
 
+# [EDITED] handle_status_command — tampilkan TP/TSL saat TRACK
 def handle_status_command(reply_chat: str) -> None:
     hours_of_data = len(price_history) * settings["scan_interval"] / 3600
     lookback = settings["lookback_hours"]
@@ -574,12 +664,30 @@ def handle_status_command(reply_chat: str) -> None:
         else f"⏳ Sabar ya sayangku~ {hours_of_data:.1f}h / {lookback}h"
     )
     peak_line = f"Peak Gap: {peak_gap:+.2f}%\n" if (current_mode == Mode.PEAK_WATCH and peak_gap is not None) else ""
+
+    # [NEW] Tampilkan level TP/TSL kalau sedang TRACK
+    track_lines = ""
+    if current_mode == Mode.TRACK and entry_gap_value is not None and trailing_gap_best is not None:
+        if active_strategy == Strategy.S1:
+            tp_level  = entry_gap_value - settings["tp_pct"]
+            tsl_level = trailing_gap_best + settings["sl_pct"]
+        else:
+            tp_level  = entry_gap_value + settings["tp_pct"]
+            tsl_level = trailing_gap_best - settings["sl_pct"]
+        track_lines = (
+            f"Entry Gap:  {entry_gap_value:+.2f}%\n"
+            f"Best Gap:   {trailing_gap_best:+.2f}%\n"
+            f"TP Level:   {tp_level:+.2f}%\n"
+            f"Trail SL:   {tsl_level:+.2f}%\n"
+        )
+
     message = (
         "📊 *Ara ara~ ini kondisi Akeno saat ini~* Ufufufu... (◕‿◕)\n"
         "\n"
         f"Mode: {current_mode.value}\n"
         f"Strategi: {active_strategy.value if active_strategy else 'Belum ada~'}\n"
         f"{peak_line}"
+        f"{track_lines}"
         f"Lookback: {lookback}h\n"
         f"History: {ready}\n"
         f"Data Points: {len(price_history)}\n"
@@ -627,14 +735,24 @@ def build_peak_watch_message(strategy: Strategy, gap: Decimal) -> str:
     )
 
 
+# [EDITED] build_entry_message — tambah blok Target TP/TSL
 def build_entry_message(strategy: Strategy, btc_ret: Decimal, eth_ret: Decimal, gap: Decimal, peak: float) -> str:
     lb = get_lookback_label()
+    gap_float = float(gap)
+    tp_pct = settings["tp_pct"]
+    sl_pct = settings["sl_pct"]
+
     if strategy == Strategy.S1:
         direction = "📈 Long BTC / Short ETH"
         reason = f"ETH pumped more than BTC ({lb})"
+        tp_level  = gap_float - tp_pct
+        tsl_initial = gap_float + sl_pct
     else:
         direction = "📈 Long ETH / Short BTC"
         reason = f"ETH dumped more than BTC ({lb})"
+        tp_level  = gap_float + tp_pct
+        tsl_initial = gap_float - sl_pct
+
     return (
         f"Ara ara ara~!!! Ini saatnya, sayangku~!!! Ufufufu... ⚡\n"
         f"🚨 *ENTRY SIGNAL: {strategy.value}*\n"
@@ -649,6 +767,12 @@ def build_entry_message(strategy: Strategy, btc_ret: Decimal, eth_ret: Decimal, 
         f"│ Gap:  {format_value(gap)}%\n"
         f"│ Peak: {peak:+.2f}%\n"
         f"└─────────────────────\n"
+        f"\n"
+        f"*Target:*\n"                                           # [NEW]
+        f"┌─────────────────────\n"                              # [NEW]
+        f"│ TP:       {tp_level:+.2f}%\n"                       # [NEW]
+        f"│ Trail SL: {tsl_initial:+.2f}% _(ikut gerak)_\n"    # [NEW]
+        f"└─────────────────────\n"                              # [NEW]
         f"\n"
         f"Gap sudah berbalik {settings['peak_reversal']}% dari puncaknya~\n"
         f"Akeno sudah menunggu momen ini untukmu, sayangku. Semuanya demi kamu~ ⚡"
@@ -709,6 +833,62 @@ def build_peak_cancelled_message(strategy: Strategy, gap: Decimal) -> str:
     )
 
 
+# [NEW] build_tp_message
+def build_tp_message(
+    btc_ret: Decimal, eth_ret: Decimal, gap: Decimal,
+    entry_gap: float, tp_level: float
+) -> str:
+    lb = get_lookback_label()
+    return (
+        f"Ara ara~!!! TP kena sayangku~!!! Ufufufu... ✨\n"
+        f"🎯 *TAKE PROFIT*\n"
+        f"\n"
+        f"Gap sudah konvergen sesuai target Akeno~\n"
+        f"\n"
+        f"*{lb} Change:*\n"
+        f"┌─────────────────────\n"
+        f"│ BTC:    {format_value(btc_ret)}%\n"
+        f"│ ETH:    {format_value(eth_ret)}%\n"
+        f"│ Gap:    {format_value(gap)}%\n"
+        f"│ Entry:  {entry_gap:+.2f}%\n"
+        f"│ TP hit: {tp_level:+.2f}%\n"
+        f"└─────────────────────\n"
+        f"\n"
+        f"Akeno senang~ Misi sukses untukmu, sayangku! ⚡"
+    )
+
+
+# [NEW] build_trailing_sl_message
+def build_trailing_sl_message(
+    btc_ret: Decimal, eth_ret: Decimal, gap: Decimal,
+    entry_gap: float, best_gap: float, sl_level: float
+) -> str:
+    lb = get_lookback_label()
+    profit_locked = abs(entry_gap - best_gap)
+    return (
+        f"………\n"
+        f"⛔ *TRAILING STOP LOSS*\n"
+        f"\n"
+        f"Ara ara~ Akeno sudah jaga posisimu sampai di sini, sayangku. "
+        f"Trailing SL kena, profit sudah Akeno amankan~ (◕ω◕)\n"
+        f"\n"
+        f"*{lb} Change:*\n"
+        f"┌─────────────────────\n"
+        f"│ BTC:      {format_value(btc_ret)}%\n"
+        f"│ ETH:      {format_value(eth_ret)}%\n"
+        f"│ Gap:      {format_value(gap)}%\n"
+        f"│ Entry:    {entry_gap:+.2f}%\n"
+        f"│ Best gap: {best_gap:+.2f}%\n"
+        f"│ TSL hit:  {sl_level:+.2f}%\n"
+        f"│ Terkunci: ~{profit_locked:.2f}%\n"
+        f"└─────────────────────\n"
+        f"\n"
+        f"Cut dulu ya sayangku. Akeno scan ulang~ ⚡\n"
+        f"Lain kali petir Akeno pasti lebih tepat. (◕‿◕)"
+    )
+
+
+# [EDITED] build_heartbeat_message — tambah TSL level real-time saat TRACK
 def build_heartbeat_message() -> str:
     lb = get_lookback_label()
     btc_ret_str = f" ({format_value(scan_stats['last_btc_ret'])}%)" if scan_stats['last_btc_ret'] is not None else ""
@@ -724,6 +904,22 @@ def build_heartbeat_message() -> str:
         else f"⏳ {hours_of_data:.1f}h / {lookback}h"
     )
     peak_line = f"│ Peak: {peak_gap:+.2f}%\n" if (current_mode == Mode.PEAK_WATCH and peak_gap is not None) else ""
+
+    # [NEW] TSL info kalau sedang TRACK
+    track_lines = ""
+    if current_mode == Mode.TRACK and entry_gap_value is not None and trailing_gap_best is not None:
+        if active_strategy == Strategy.S1:
+            tp_level  = entry_gap_value - settings["tp_pct"]
+            tsl_level = trailing_gap_best + settings["sl_pct"]
+        else:
+            tp_level  = entry_gap_value + settings["tp_pct"]
+            tsl_level = trailing_gap_best - settings["sl_pct"]
+        track_lines = (
+            f"│ Entry:    {entry_gap_value:+.2f}%\n"
+            f"│ TP:       {tp_level:+.2f}%\n"
+            f"│ Trail SL: {tsl_level:+.2f}% (best: {trailing_gap_best:+.2f}%)\n"
+        )
+
     return (
         f"💓 *Ara ara~ kamu khawatir Akeno pergi kemana-mana ya?*\n"
         f"\n"
@@ -745,6 +941,7 @@ def build_heartbeat_message() -> str:
         f"│ ETH: {eth_str}\n"
         f"│ Gap ({lb}): {gap_str}\n"
         f"{peak_line}"
+        f"{track_lines}"
         f"└─────────────────────\n"
         f"\n"
         f"*Data:* {data_status}\n"
@@ -865,10 +1062,83 @@ def is_data_fresh(now, btc_updated, eth_updated) -> bool:
 
 
 # =============================================================================
-# State Machine with Peak Detection
+# [NEW] TP + Trailing SL Checker
+# =============================================================================
+def check_sltp(gap_float: float, btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) -> bool:
+    """
+    Cek TP dan Trailing SL saat Mode TRACK.
+
+    S1: gap harusnya turun (konvergen)
+        trailing_gap_best = min gap sejak entry
+        TSL = trailing_gap_best + sl_pct  (ikut turun kalau gap turun)
+        TP  = entry_gap_value  - tp_pct
+
+    S2: gap harusnya naik (konvergen dari negatif)
+        trailing_gap_best = max gap sejak entry
+        TSL = trailing_gap_best - sl_pct  (ikut naik kalau gap naik)
+        TP  = entry_gap_value  + tp_pct
+
+    Return True jika TP atau TSL terpicu.
+    """
+    global current_mode, active_strategy, entry_gap_value, trailing_gap_best
+
+    if entry_gap_value is None or active_strategy is None or trailing_gap_best is None:
+        return False
+
+    tp_pct = settings["tp_pct"]
+    sl_pct = settings["sl_pct"]
+
+    if active_strategy == Strategy.S1:
+        tp_level = entry_gap_value - tp_pct
+
+        if gap_float < trailing_gap_best:
+            trailing_gap_best = gap_float
+            logger.info(f"TSL S1 updated. Best: {trailing_gap_best:.2f}%, TSL: {trailing_gap_best + sl_pct:.2f}%")
+
+        tsl_level = trailing_gap_best + sl_pct
+
+        if gap_float <= tp_level:
+            send_alert(build_tp_message(btc_ret, eth_ret, gap, entry_gap_value, tp_level))
+            logger.info(f"TP S1. Entry: {entry_gap_value:.2f}%, Now: {gap_float:.2f}%, TP: {tp_level:.2f}%")
+            current_mode, active_strategy, entry_gap_value, trailing_gap_best = Mode.SCAN, None, None, None
+            return True
+
+        if gap_float >= tsl_level:
+            send_alert(build_trailing_sl_message(btc_ret, eth_ret, gap, entry_gap_value, trailing_gap_best, tsl_level))
+            logger.info(f"TSL S1. Entry: {entry_gap_value:.2f}%, Best: {trailing_gap_best:.2f}%, TSL: {tsl_level:.2f}%, Now: {gap_float:.2f}%")
+            current_mode, active_strategy, entry_gap_value, trailing_gap_best = Mode.SCAN, None, None, None
+            return True
+
+    elif active_strategy == Strategy.S2:
+        tp_level = entry_gap_value + tp_pct
+
+        if gap_float > trailing_gap_best:
+            trailing_gap_best = gap_float
+            logger.info(f"TSL S2 updated. Best: {trailing_gap_best:.2f}%, TSL: {trailing_gap_best - sl_pct:.2f}%")
+
+        tsl_level = trailing_gap_best - sl_pct
+
+        if gap_float >= tp_level:
+            send_alert(build_tp_message(btc_ret, eth_ret, gap, entry_gap_value, tp_level))
+            logger.info(f"TP S2. Entry: {entry_gap_value:.2f}%, Now: {gap_float:.2f}%, TP: {tp_level:.2f}%")
+            current_mode, active_strategy, entry_gap_value, trailing_gap_best = Mode.SCAN, None, None, None
+            return True
+
+        if gap_float <= tsl_level:
+            send_alert(build_trailing_sl_message(btc_ret, eth_ret, gap, entry_gap_value, trailing_gap_best, tsl_level))
+            logger.info(f"TSL S2. Entry: {entry_gap_value:.2f}%, Best: {trailing_gap_best:.2f}%, TSL: {tsl_level:.2f}%, Now: {gap_float:.2f}%")
+            current_mode, active_strategy, entry_gap_value, trailing_gap_best = Mode.SCAN, None, None, None
+            return True
+
+    return False
+
+
+# =============================================================================
+# [EDITED] State Machine with Peak Detection
 # =============================================================================
 def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) -> None:
     global current_mode, active_strategy, peak_gap, peak_strategy
+    global entry_gap_value, trailing_gap_best  # [NEW]
 
     gap_float = float(gap)
     entry_thresh = settings["entry_threshold"]
@@ -908,8 +1178,10 @@ def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) ->
             elif peak_gap - gap_float >= peak_reversal:
                 active_strategy = Strategy.S1
                 current_mode = Mode.TRACK
+                entry_gap_value  = gap_float   # [NEW]
+                trailing_gap_best = gap_float  # [NEW] trailing mulai dari titik entry
                 send_alert(build_entry_message(Strategy.S1, btc_ret, eth_ret, gap, peak_gap))
-                logger.info(f"ENTRY S1. Peak: {peak_gap:.2f}%, Now: {gap_float:.2f}%")
+                logger.info(f"ENTRY S1. Peak: {peak_gap:.2f}%, Entry: {gap_float:.2f}%")
                 peak_gap, peak_strategy = None, None
 
             else:
@@ -928,37 +1200,45 @@ def evaluate_and_transition(btc_ret: Decimal, eth_ret: Decimal, gap: Decimal) ->
             elif gap_float - peak_gap >= peak_reversal:
                 active_strategy = Strategy.S2
                 current_mode = Mode.TRACK
+                entry_gap_value  = gap_float   # [NEW]
+                trailing_gap_best = gap_float  # [NEW] trailing mulai dari titik entry
                 send_alert(build_entry_message(Strategy.S2, btc_ret, eth_ret, gap, peak_gap))
-                logger.info(f"ENTRY S2. Peak: {peak_gap:.2f}%, Now: {gap_float:.2f}%")
+                logger.info(f"ENTRY S2. Peak: {peak_gap:.2f}%, Entry: {gap_float:.2f}%")
                 peak_gap, peak_strategy = None, None
 
             else:
                 logger.info(f"PEAK WATCH S2: Gap {gap_float:.2f}% | Peak {peak_gap:.2f}% | Need {peak_reversal}% rise")
 
     elif current_mode == Mode.TRACK:
+        if check_sltp(gap_float, btc_ret, eth_ret, gap):  # [NEW] TP/TSL dicek duluan
+            return
+
         if abs(gap_float) <= exit_thresh:
             send_alert(build_exit_message(btc_ret, eth_ret, gap))
             logger.info(f"EXIT triggered. Gap: {gap_float:.2f}%")
             current_mode, active_strategy = Mode.SCAN, None
+            entry_gap_value, trailing_gap_best = None, None  # [NEW]
             return
 
         if active_strategy == Strategy.S1 and gap_float >= invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S1, btc_ret, eth_ret, gap))
             logger.info(f"INVALIDATION S1. Gap: {gap_float:.2f}%")
             current_mode, active_strategy = Mode.SCAN, None
+            entry_gap_value, trailing_gap_best = None, None  # [NEW]
             return
 
         if active_strategy == Strategy.S2 and gap_float <= -invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S2, btc_ret, eth_ret, gap))
             logger.info(f"INVALIDATION S2. Gap: {gap_float:.2f}%")
             current_mode, active_strategy = Mode.SCAN, None
+            entry_gap_value, trailing_gap_best = None, None  # [NEW]
             return
 
         logger.debug(f"TRACK {active_strategy.value if active_strategy else 'None'}: Gap {gap_float:.2f}%")
 
 
 # =============================================================================
-# Startup Message
+# [EDITED] Startup Message — tambah info TP/TSL
 # =============================================================================
 def send_startup_message() -> bool:
     price_data = fetch_prices()
@@ -999,6 +1279,7 @@ def send_startup_message() -> bool:
         f"📉 Exit: ±{settings['exit_threshold']}%\n"
         f"⚠️ Invalidation: ±{settings['invalidation_threshold']}%\n"
         f"🎯 Peak reversal: {settings['peak_reversal']}%\n"
+        f"✅ TP: {settings['tp_pct']}% | 🛑 Trailing SL: {settings['sl_pct']}% distance\n"  # [NEW]
         f"\n"
         f"{history_info}\n"
         f"Jangan ragu minta bantuan ya~ Ketik `/help` kalau butuh sesuatu. "
@@ -1025,8 +1306,12 @@ def main_loop() -> None:
     global last_heartbeat_time
 
     logger.info("=" * 60)
-    logger.info("Monk Bot starting - Peak Detection + Akeno Mode")
-    logger.info(f"Entry: {settings['entry_threshold']}% | Exit: {settings['exit_threshold']}% | Invalid: {settings['invalidation_threshold']}% | Peak: {settings['peak_reversal']}%")
+    logger.info("Monk Bot starting - Peak Detection + Trailing SL + Akeno Mode")
+    logger.info(
+        f"Entry: {settings['entry_threshold']}% | Exit: {settings['exit_threshold']}% | "
+        f"Invalid: {settings['invalidation_threshold']}% | Peak: {settings['peak_reversal']}% | "
+        f"TP: {settings['tp_pct']}% | TSL: {settings['sl_pct']}%"
+    )
     logger.info("=" * 60)
 
     threading.Thread(target=command_polling_thread, daemon=True).start()
