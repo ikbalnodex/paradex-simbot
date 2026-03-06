@@ -12,6 +12,12 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 # =============================================================================
+# Upstash Redis (untuk persistent history di Railway)
+# =============================================================================
+UPSTASH_REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+# =============================================================================
 # API Configuration
 # =============================================================================
 API_BASE_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io"
