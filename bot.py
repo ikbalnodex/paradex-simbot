@@ -209,8 +209,8 @@ def save_history() -> None:
             {"timestamp": p.timestamp.isoformat(), "btc": str(p.btc), "eth": str(p.eth)}
             for p in price_history
         ])
-        # SET key value EX 90000 (25 jam TTL, lebih dari max lookback 24h)
-        _redis_request("POST", f"/set/{REDIS_KEY}", {"value": data, "ex": 90000})
+        # SET key value EX 172800 (48 jam TTL, aman untuk max lookback 24h)
+        _redis_request("POST", f"/set/{REDIS_KEY}", {"value": data, "ex": 172800})
         logger.debug(f"Saved {len(price_history)} points to Redis")
     except Exception as e:
         logger.warning(f"Failed to save history to Redis: {e}")
@@ -1461,8 +1461,8 @@ def main_loop() -> None:
                     logger.warning("Data not fresh, skipping")
                 else:
                     append_price(now, price_data.btc_price, price_data.eth_price)
+                    save_history()  # Simpan SEBELUM prune supaya Redis punya data lengkap
                     prune_history(now)
-                    save_history()  # Persist ke Redis setiap scan
                     price_then = get_lookback_price(now)
 
                     if price_then is None:
