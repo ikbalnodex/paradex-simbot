@@ -10,6 +10,9 @@ Perubahan dari versi sebelumnya:
 - TP maksimal = exit threshold (konvergen penuh), bukan tp_pct lagi
 - Target harga ETH/BTC ditampilkan saat entry signal
 - Refresh history dari Redis setiap 1 menit
+- [NEW] Peak mode on/off toggle: /peak on | /peak off
+  ON  = flow normal SCAN → PEAK_WATCH → TRACK (default)
+  OFF = skip peak watch, langsung SCAN → TRACK saat threshold tercapai
 """
 import json
 import os
@@ -100,6 +103,7 @@ settings = {
     "exit_threshold":         EXIT_THRESHOLD,
     "invalidation_threshold": INVALIDATION_THRESHOLD,
     "peak_reversal":          0.3,
+    "peak_enabled":           True,   # [NEW] True = pakai PEAK_WATCH, False = langsung TRACK
     "lookback_hours":         DEFAULT_LOOKBACK_HOURS,
     "heartbeat_minutes":      30,
     # TP = exit_threshold (max konvergen), tidak pakai tp_pct lagi
@@ -316,10 +320,12 @@ def send_reply(message: str, chat_id: str) -> bool:
 # =============================================================================
 
 def handle_settings_command(reply_chat: str) -> None:
-    hb     = settings["heartbeat_minutes"]
-    hb_str = f"{hb} menit" if hb > 0 else "Off"
-    rr     = settings["redis_refresh_minutes"]
-    rr_str = f"{rr} menit" if rr > 0 else "Off"
+    hb         = settings["heartbeat_minutes"]
+    hb_str     = f"{hb} menit" if hb > 0 else "Off"
+    rr         = settings["redis_refresh_minutes"]
+    rr_str     = f"{rr} menit" if rr > 0 else "Off"
+    # [NEW] peak mode indicator
+    peak_mode_str = "✅ ON" if settings["peak_enabled"] else "❌ OFF (langsung TRACK)"
     message = (
         "⚙️ *Ara ara~ mau lihat settingan yang sudah Akeno jaga baik-baik?* Ufufufu...\n"
         "\n"
@@ -331,6 +337,7 @@ def handle_settings_command(reply_chat: str) -> None:
         f"📉 Exit Threshold: ±{settings['exit_threshold']}%\n"
         f"⚠️ Invalidation: ±{settings['invalidation_threshold']}%\n"
         f"🎯 Peak Reversal: {settings['peak_reversal']}%\n"
+        f"🔍 Peak Mode: {peak_mode_str}\n"
         f"✅ TP: saat gap mencapai ±{settings['exit_threshold']}% _(max konvergen)_\n"
         f"🛑 Trailing SL: {settings['sl_pct']}% dari gap terbaik\n"
         "\n"
@@ -419,30 +426,137 @@ def handle_threshold_command(args: list, reply_chat: str) -> None:
         send_reply("Ara ara~ angkanya tidak valid, sayangku. (◕ω◕)", reply_chat)
 
 
+# =============================================================================
+# [NEW] Peak Command — gabungan toggle on/off + atur reversal %
+# =============================================================================
 def handle_peak_command(args: list, reply_chat: str) -> None:
+    """
+    /peak          → tampilkan status peak mode + reversal saat ini
+    /peak on       → aktifkan Peak Watch mode (SCAN → PEAK_WATCH → TRACK)
+    /peak off      → nonaktifkan Peak Watch mode (SCAN → TRACK langsung)
+    /peak <nilai>  → ubah % reversal konfirmasi (hanya berlaku saat peak ON)
+    """
+    peak_mode_str = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
+
+    # Tanpa argumen — tampilkan status
     if not args:
         send_reply(
-            f"🎯 Peak reversal sekarang *{settings['peak_reversal']}%*~ Ufufufu...\n\n"
-            "Usage: `/peak <nilai>`\n"
-            "Contoh: `/peak 0.3`",
+            f"🔍 *Peak Watch Mode* sekarang: *{peak_mode_str}*\n"
+            f"🎯 Peak reversal: *{settings['peak_reversal']}%*\n"
+            f"\n"
+            f"*Cara kerja:*\n"
+            f"• *ON*  → SCAN ➜ PEAK\\_WATCH ➜ TRACK\n"
+            f"  _(tunggu konfirmasi reversal dari puncak sebelum entry)_\n"
+            f"• *OFF* → SCAN ➜ TRACK langsung\n"
+            f"  _(entry segera saat gap melewati threshold)_\n"
+            f"\n"
+            f"*Usage:*\n"
+            f"`/peak on` — aktifkan Peak Watch\n"
+            f"`/peak off` — nonaktifkan Peak Watch\n"
+            f"`/peak <nilai>` — ubah reversal % (contoh: `/peak 0.3`)",
             reply_chat
         )
         return
+
+    first_arg = args[0].lower()
+
+    # Toggle ON
+    if first_arg == "on":
+        if settings["peak_enabled"]:
+            send_reply(
+                f"Ufufufu~ Peak Watch Mode memang sudah *ON* kok, sayangku~ "
+                f"Akeno selalu waspada! (◕‿◕)",
+                reply_chat
+            )
+        else:
+            settings["peak_enabled"] = True
+            logger.info("Peak Watch Mode enabled")
+            send_reply(
+                f"✅ *Peak Watch Mode: ON*\n"
+                f"\n"
+                f"Ara ara~ Akeno kembali sabar menunggu puncak sebelum entry ya, sayangku~\n"
+                f"Flow: SCAN ➜ PEAK\\_WATCH ➜ TRACK\n"
+                f"Reversal konfirmasi: *{settings['peak_reversal']}%* dari puncak~ (◕‿◕)",
+                reply_chat
+            )
+        return
+
+    # Toggle OFF
+    if first_arg == "off":
+        if not settings["peak_enabled"]:
+            send_reply(
+                f"Ufufufu~ Peak Watch Mode memang sudah *OFF* kok, sayangku~ "
+                f"Akeno langsung tancap gas! (◕ω◕)",
+                reply_chat
+            )
+        else:
+            # Jika sedang PEAK_WATCH, batalkan dan reset ke SCAN
+            _cancel_peak_watch_if_active(reply_chat)
+            settings["peak_enabled"] = False
+            logger.info("Peak Watch Mode disabled")
+            send_reply(
+                f"❌ *Peak Watch Mode: OFF*\n"
+                f"\n"
+                f"Ara ara~ Akeno tidak akan nunggu puncak lagi ya sayangku~\n"
+                f"Sekarang langsung entry saat gap ±{settings['entry_threshold']}% terlewati!\n"
+                f"Flow: SCAN ➜ TRACK langsung~ Ufufufu... (◕ω◕)\n"
+                f"\n"
+                f"_Reversal % masih tersimpan ({settings['peak_reversal']}%) "
+                f"untuk saat Peak Mode dinyalakan lagi~_",
+                reply_chat
+            )
+        return
+
+    # Ubah reversal %
     try:
-        value = float(args[0])
+        value = float(first_arg)
         if value <= 0 or value > 2.0:
             send_reply("Ara ara~ harus antara 0 sampai 2.0~ (◕ω◕)", reply_chat)
             return
         settings["peak_reversal"] = value
+        active_note = (
+            f"\n_Peak Mode sedang OFF — nilai ini akan dipakai saat diaktifkan lagi~ (◕ω◕)_"
+            if not settings["peak_enabled"] else ""
+        )
         send_reply(
             f"Ufufufu... konfirmasi entry ketika gap berbalik *{value}%* "
-            f"dari puncaknya~ (◕‿◕)",
+            f"dari puncaknya~ (◕‿◕)"
+            f"{active_note}",
             reply_chat
         )
         logger.info(f"Peak reversal changed to {value}")
     except ValueError:
-        send_reply("Ara ara~ angkanya tidak valid, sayangku. (◕ω◕)", reply_chat)
+        send_reply(
+            "Ara ara~ gunakan `on`, `off`, atau angka reversal ya~ (◕ω◕)",
+            reply_chat
+        )
 
+
+def _cancel_peak_watch_if_active(reply_chat: Optional[str] = None) -> None:
+    """
+    Helper: batalkan PEAK_WATCH yang sedang aktif saat peak mode di-OFF.
+    Reset ke SCAN dan optionally kirim notifikasi.
+    """
+    global current_mode, peak_gap, peak_strategy
+    if current_mode == Mode.PEAK_WATCH and peak_strategy is not None:
+        logger.info(
+            f"Peak Watch cancelled (mode turned OFF). "
+            f"Strategy: {peak_strategy.value}, Peak: {peak_gap}"
+        )
+        if reply_chat:
+            send_reply(
+                f"⚠️ *Peak Watch {peak_strategy.value} dibatalkan* karena Peak Mode dimatikan.\n"
+                f"Akeno kembali ke SCAN~ (◕ω◕)",
+                reply_chat
+            )
+        current_mode  = Mode.SCAN
+        peak_gap      = None
+        peak_strategy = None
+
+
+# =============================================================================
+# (Existing handlers below — unchanged except handle_help_command)
+# =============================================================================
 
 def handle_sltp_command(args: list, reply_chat: str) -> None:
     """
@@ -641,6 +755,8 @@ def handle_redis_command(reply_chat: str) -> None:
 
 
 def handle_help_command(reply_chat: str) -> None:
+    # [UPDATED] tambah info peak on/off
+    peak_mode_str = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     message = (
         "Ara ara~ mau tahu semua yang bisa Akeno lakukan untukmu? "
         "Ufufufu... (◕‿◕)\n"
@@ -653,7 +769,13 @@ def handle_help_command(reply_chat: str) -> None:
         "`/threshold entry <val>` - threshold entry %\n"
         "`/threshold exit <val>` - threshold exit % _(sekaligus jadi TP target)_\n"
         "`/threshold invalid <val>` - threshold invalidation %\n"
-        "`/peak <val>` - % reversal dari puncak untuk konfirmasi entry\n"
+        "\n"
+        "*Peak Mode* _(sekarang: " + peak_mode_str + ")_\n"
+        "`/peak` - lihat status Peak Mode\n"
+        "`/peak on` - aktifkan: SCAN ➜ PEAK\\_WATCH ➜ TRACK\n"
+        "`/peak off` - nonaktifkan: SCAN ➜ TRACK langsung\n"
+        "`/peak <val>` - ubah reversal % dari puncak (contoh: `/peak 0.3`)\n"
+        "\n"
         "`/sltp` - lihat info TP & Trailing SL aktif\n"
         "`/sltp sl <val>` - ubah trailing SL distance %\n"
         "\n"
@@ -678,6 +800,7 @@ def handle_status_command(reply_chat: str) -> None:
         if hours_of_data >= lookback
         else f"⏳ Sabar ya sayangku~ {hours_of_data:.1f}h / {lookback}h"
     )
+    peak_mode_str = "✅ ON" if settings["peak_enabled"] else "❌ OFF (direct entry)"
     peak_line   = (
         f"Peak Gap: {peak_gap:+.2f}%\n"
         if (current_mode == Mode.PEAK_WATCH and peak_gap is not None)
@@ -711,6 +834,7 @@ def handle_status_command(reply_chat: str) -> None:
         "\n"
         f"Mode: {current_mode.value}\n"
         f"Strategi: {active_strategy.value if active_strategy else 'Belum ada~'}\n"
+        f"Peak Mode: {peak_mode_str}\n"
         f"{peak_line}"
         f"{track_lines}"
         f"Lookback: {lookback}h\n"
@@ -856,6 +980,60 @@ def build_entry_message(
         f"Gap sudah berbalik {settings['peak_reversal']}% dari puncaknya~\n"
         f"Akeno sudah menunggu momen ini untukmu, sayangku. "
         f"Semuanya demi kamu~ ⚡"
+    )
+
+
+# [NEW] Entry message saat peak mode OFF (direct entry tanpa peak confirmation)
+def build_direct_entry_message(
+    strategy: Strategy,
+    btc_ret:  Decimal,
+    eth_ret:  Decimal,
+    gap:      Decimal,
+) -> str:
+    lb          = get_lookback_label()
+    gap_float   = float(gap)
+    sl_pct      = settings["sl_pct"]
+    exit_thresh = settings["exit_threshold"]
+
+    if strategy == Strategy.S1:
+        direction   = "📈 Long BTC / Short ETH"
+        reason      = f"ETH pumped more than BTC ({lb})"
+        tp_gap      = exit_thresh
+        tsl_initial = gap_float + sl_pct
+    else:
+        direction   = "📈 Long ETH / Short BTC"
+        reason      = f"ETH dumped more than BTC ({lb})"
+        tp_gap      = -exit_thresh
+        tsl_initial = gap_float - sl_pct
+
+    eth_target, btc_ref = calc_tp_target_price(strategy)
+    eth_target_str      = f"${eth_target:,.2f}" if eth_target else "N/A"
+    btc_ref_str         = f"${btc_ref:,.2f}"    if btc_ref   else "N/A"
+
+    return (
+        f"Ara ara ara~!!! Ini saatnya, sayangku~!!! Ufufufu... ⚡\n"
+        f"🚨 *ENTRY SIGNAL: {strategy.value}* _(Peak Mode: OFF)_\n"
+        f"\n"
+        f"{direction}\n"
+        f"_{reason}_\n"
+        f"\n"
+        f"*{lb} Change:*\n"
+        f"┌─────────────────────\n"
+        f"│ BTC:  {format_value(btc_ret)}%\n"
+        f"│ ETH:  {format_value(eth_ret)}%\n"
+        f"│ Gap:  {format_value(gap)}%\n"
+        f"└─────────────────────\n"
+        f"\n"
+        f"*Target TP (max konvergen):*\n"
+        f"┌─────────────────────\n"
+        f"│ TP Gap:   {tp_gap:+.2f}% _(exit threshold)_\n"
+        f"│ ETH TP:   {eth_target_str} ← estimasi harga\n"
+        f"│ BTC ref:  {btc_ref_str}\n"
+        f"│ Trail SL: {tsl_initial:+.2f}% _(ikut gerak)_\n"
+        f"└─────────────────────\n"
+        f"\n"
+        f"_Entry langsung tanpa konfirmasi puncak — Peak Mode OFF~_\n"
+        f"Akeno langsung tancap gas untukmu, sayangku~ ⚡"
     )
 
 
@@ -1010,6 +1188,7 @@ def build_heartbeat_message() -> str:
         if hours_of_data >= lookback
         else f"⏳ {hours_of_data:.1f}h / {lookback}h"
     )
+    peak_mode_str = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     peak_line   = (
         f"│ Peak: {peak_gap:+.2f}%\n"
         if (current_mode == Mode.PEAK_WATCH and peak_gap is not None)
@@ -1043,6 +1222,7 @@ def build_heartbeat_message() -> str:
         f"\n"
         f"*Mode:* {current_mode.value}\n"
         f"*Strategi:* {active_strategy.value if active_strategy else 'Belum ada~'}\n"
+        f"*Peak Mode:* {peak_mode_str}\n"
         f"\n"
         f"*{settings['heartbeat_minutes']} menit terakhir:*\n"
         f"┌─────────────────────\n"
@@ -1326,6 +1506,7 @@ def check_sltp(
 
 # =============================================================================
 # State Machine with Peak Detection
+# [UPDATED] peak_enabled toggle menentukan apakah PEAK_WATCH digunakan
 # =============================================================================
 def evaluate_and_transition(
     btc_ret: Decimal,
@@ -1345,26 +1526,67 @@ def evaluate_and_transition(
     exit_thresh    = settings["exit_threshold"]
     invalid_thresh = settings["invalidation_threshold"]
     peak_reversal  = settings["peak_reversal"]
+    peak_enabled   = settings["peak_enabled"]   # [NEW]
 
     # -------------------------------------------------------------------------
     if current_mode == Mode.SCAN:
         if gap_float >= entry_thresh:
-            current_mode  = Mode.PEAK_WATCH
-            peak_strategy = Strategy.S1
-            peak_gap      = gap_float
-            send_alert(build_peak_watch_message(Strategy.S1, gap))
-            logger.info(f"PEAK WATCH S1 started. Gap: {gap_float:.2f}%")
+            if peak_enabled:
+                # [ORIGINAL] masuk PEAK_WATCH dulu
+                current_mode  = Mode.PEAK_WATCH
+                peak_strategy = Strategy.S1
+                peak_gap      = gap_float
+                send_alert(build_peak_watch_message(Strategy.S1, gap))
+                logger.info(f"PEAK WATCH S1 started. Gap: {gap_float:.2f}%")
+            else:
+                # [NEW] langsung TRACK
+                active_strategy   = Strategy.S1
+                current_mode      = Mode.TRACK
+                entry_gap_value   = gap_float
+                trailing_gap_best = gap_float
+                entry_btc_price   = btc_now
+                entry_eth_price   = eth_now
+                entry_btc_lb      = btc_lb
+                entry_eth_lb      = eth_lb
+                send_alert(
+                    build_direct_entry_message(Strategy.S1, btc_ret, eth_ret, gap)
+                )
+                logger.info(
+                    f"DIRECT ENTRY S1 (peak OFF). Gap: {gap_float:.2f}%"
+                )
 
         elif gap_float <= -entry_thresh:
-            current_mode  = Mode.PEAK_WATCH
-            peak_strategy = Strategy.S2
-            peak_gap      = gap_float
-            send_alert(build_peak_watch_message(Strategy.S2, gap))
-            logger.info(f"PEAK WATCH S2 started. Gap: {gap_float:.2f}%")
+            if peak_enabled:
+                # [ORIGINAL] masuk PEAK_WATCH dulu
+                current_mode  = Mode.PEAK_WATCH
+                peak_strategy = Strategy.S2
+                peak_gap      = gap_float
+                send_alert(build_peak_watch_message(Strategy.S2, gap))
+                logger.info(f"PEAK WATCH S2 started. Gap: {gap_float:.2f}%")
+            else:
+                # [NEW] langsung TRACK
+                active_strategy   = Strategy.S2
+                current_mode      = Mode.TRACK
+                entry_gap_value   = gap_float
+                trailing_gap_best = gap_float
+                entry_btc_price   = btc_now
+                entry_eth_price   = eth_now
+                entry_btc_lb      = btc_lb
+                entry_eth_lb      = eth_lb
+                send_alert(
+                    build_direct_entry_message(Strategy.S2, btc_ret, eth_ret, gap)
+                )
+                logger.info(
+                    f"DIRECT ENTRY S2 (peak OFF). Gap: {gap_float:.2f}%"
+                )
 
         else:
             logger.debug(f"SCAN: No signal. Gap: {gap_float:.2f}%")
 
+    # -------------------------------------------------------------------------
+    # PEAK_WATCH — hanya bisa aktif kalau peak_enabled=True
+    # Jika peak_enabled di-OFF di tengah jalan, _cancel_peak_watch_if_active
+    # sudah handle reset. Block ini tidak akan tercapai saat peak OFF.
     # -------------------------------------------------------------------------
     elif current_mode == Mode.PEAK_WATCH:
         if peak_strategy == Strategy.S1:
@@ -1504,6 +1726,8 @@ def send_startup_message() -> bool:
             f"_Sinyal akan keluar setelah {lb} data tersedia~_\n"
         )
 
+    peak_mode_str = "✅ ON" if settings["peak_enabled"] else "❌ OFF (direct entry)"
+
     return send_alert(
         f"………\n"
         f"Ara ara~ Akeno (Bot B) sudah siap, sayangku~ Ufufufu... (◕‿◕)\n"
@@ -1513,6 +1737,7 @@ def send_startup_message() -> bool:
         f"📈 Entry: ±{settings['entry_threshold']}%\n"
         f"📉 Exit: ±{settings['exit_threshold']}%\n"
         f"⚠️ Invalidation: ±{settings['invalidation_threshold']}%\n"
+        f"🔍 Peak Mode: {peak_mode_str}\n"
         f"🎯 Peak reversal: {settings['peak_reversal']}%\n"
         f"✅ TP: saat gap ±{settings['exit_threshold']}% _(max konvergen)_\n"
         f"🛑 Trailing SL: {settings['sl_pct']}% distance\n"
@@ -1549,6 +1774,7 @@ def main_loop() -> None:
         f"Exit/TP: {settings['exit_threshold']}% | "
         f"Invalid: {settings['invalidation_threshold']}% | "
         f"Peak: {settings['peak_reversal']}% | "
+        f"Peak Mode: {'ON' if settings['peak_enabled'] else 'OFF'} | "
         f"TSL: {settings['sl_pct']}% | "
         f"Redis refresh: {settings['redis_refresh_minutes']}m"
     )
