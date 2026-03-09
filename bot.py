@@ -1584,8 +1584,200 @@ def handle_pnl_command(reply_chat: str) -> None:
     )
 
 
+def _calc_ratio_extended_stats(
+    curr_r: float,
+    avg_r:  float,
+    hi_r:   float,
+    lo_r:   float,
+    pct_r:  int,
+) -> dict:
+    """
+    Hitung statistik lanjutan ratio untuk conviction detail.
+    Returns dict berisi berbagai metric tambahan.
+    """
+    # Berapa % dari high dan low
+    pct_from_high  = (curr_r - hi_r) / hi_r * 100 if hi_r else 0
+    pct_from_low   = (curr_r - lo_r) / lo_r * 100  if lo_r else 0
+    range_total    = hi_r - lo_r if hi_r and lo_r else 0
+
+    # Posisi dalam range (0% = di low, 100% = di high)
+    pos_in_range   = (curr_r - lo_r) / range_total * 100 if range_total > 0 else 50
+
+    # Berapa jauh dari avg dalam satuan std dev (jika bisa)
+    ratios = [float(p.eth / p.btc) for p in price_history]
+    std    = None
+    z_score = None
+    if len(ratios) >= 10:
+        mean   = sum(ratios) / len(ratios)
+        variance = sum((r - mean) ** 2 for r in ratios) / len(ratios)
+        std    = variance ** 0.5
+        if std > 0:
+            z_score = (curr_r - mean) / std
+
+    # Berapa kali ratio ada di zona ini (±5 percentile) dalam history
+    zone_lo = max(0, pct_r - 5)
+    zone_hi = min(100, pct_r + 5)
+    sorted_r = sorted(ratios)
+    n        = len(sorted_r)
+    zone_count = sum(
+        1 for r in ratios
+        if sorted_r[int(zone_lo / 100 * n)] <= r <= sorted_r[min(n - 1, int(zone_hi / 100 * n))]
+    ) if n > 0 else 0
+    zone_pct = zone_count / n * 100 if n > 0 else 0
+
+    # Revert magnitude
+    revert_to_avg  = (avg_r - curr_r) / curr_r * 100 if avg_r else 0
+    revert_to_mid  = ((hi_r + lo_r) / 2 - curr_r) / curr_r * 100 if hi_r and lo_r else 0
+
+    return {
+        "pct_from_high": pct_from_high,
+        "pct_from_low":  pct_from_low,
+        "pos_in_range":  pos_in_range,
+        "z_score":       z_score,
+        "std":           std,
+        "zone_pct":      zone_pct,
+        "revert_to_avg": revert_to_avg,
+        "revert_to_mid": revert_to_mid,
+    }
+
+
+def _build_conviction_detail(
+    strategy: Strategy,
+    stars:    str,
+    pct_r:    int,
+    curr_r:   float,
+    avg_r:    float,
+    hi_r:     float,
+    lo_r:     float,
+    ext:      dict,
+) -> str:
+    """
+    Bangun teks conviction detail untuk satu strategi.
+    """
+    window  = settings["ratio_window_days"]
+    z       = ext["z_score"]
+    z_str   = f"{z:+.2f}σ dari avg" if z is not None else "N/A"
+
+    if strategy == Strategy.S1:
+        # S1: Long BTC / Short ETH — bagus saat ETH mahal (pct tinggi)
+        label   = "S1 — Long BTC / Short ETH"
+
+        # Alasan kuantitatif
+        reasons = []
+        if pct_r >= 75:
+            reasons.append(f"Ratio *{pct_r}th percentile* — ETH mahal secara historis ({window}d)")
+        if ext["pct_from_high"] >= -1.0:
+            reasons.append(f"Ratio *{abs(ext['pct_from_high']):.2f}%* dari {window}d high — mendekati puncak")
+        elif ext["pct_from_high"] >= -3.0:
+            reasons.append(f"Ratio *{abs(ext['pct_from_high']):.2f}%* di bawah {window}d high")
+        if z is not None and z >= 1.0:
+            reasons.append(f"Z-score *{z:+.2f}σ* — ETH secara statistik mahal vs BTC")
+        if ext["revert_to_avg"] < -0.5:
+            reasons.append(f"Mean revert ke avg butuh ETH turun *{abs(ext['revert_to_avg']):.2f}%* vs BTC")
+
+        # Timing context
+        if pct_r >= 90:
+            timing = "🟢 *Timing sangat baik* — ratio di zona ekstrem, revert probability tinggi"
+        elif pct_r >= 75:
+            timing = "🟡 *Timing baik* — ratio elevated, tapi belum di puncak ekstrem"
+        elif pct_r >= 60:
+            timing = "🟠 *Timing cukup* — ratio di atas avg, bisa naik lebih dulu sebelum revert"
+        else:
+            timing = "🔴 *Timing kurang* — ratio belum cukup tinggi untuk S1 yang optimal"
+
+        # Risk note
+        if pct_r >= 90:
+            risk = "⚠️ *Risk:* Ratio bisa terus naik sebelum revert (trend ETH bullish bisa override)"
+        elif pct_r >= 75:
+            risk = "⚠️ *Risk:* Kalau ratio tembus {:.5f} (high), gap bisa melebar lebih jauh".format(hi_r)
+        else:
+            risk = "⚠️ *Risk:* Ratio belum di zona optimal S1 — conviction rendah"
+
+        # Entry rule of thumb
+        if pct_r >= 75:
+            entry_note = (
+                f"_💡 Mentor rule: ratio ≥75th pct = konfirmasi tambahan untuk S1_\n"
+                f"_Sekarang {pct_r}th → {'✅ terpenuhi' if pct_r >= 75 else '❌ belum'}_"
+            )
+        else:
+            entry_note = f"_💡 Tunggu ratio naik ke ≥75th pct untuk conviction penuh S1~_"
+
+        reason_block = "\n".join(f"│ ✅ {r}" for r in reasons) if reasons else "│ Belum ada sinyal kuat"
+
+        return (
+            f"*{stars} {label}*\n"
+            f"┌─────────────────────\n"
+            f"│ Percentile:  *{pct_r}th* dari {window}d history\n"
+            f"│ Dari high:   {ext['pct_from_high']:+.2f}% ({abs(ext['pct_from_high']):.2f}% di bawah puncak)\n"
+            f"│ Dari avg:    revert *{ext['revert_to_avg']:+.2f}%* ke {avg_r:.5f}\n"
+            f"│ Z-score:     {z_str}\n"
+            f"│ Pos range:   {ext['pos_in_range']:.0f}% (0=low, 100=high)\n"
+            f"├─────────────────────\n"
+            f"{reason_block}\n"
+            f"├─────────────────────\n"
+            f"│ {timing}\n"
+            f"└─────────────────────\n"
+            f"{risk}\n"
+            f"{entry_note}"
+        )
+
+    else:
+        # S2: Long ETH / Short BTC — bagus saat ETH murah (pct rendah)
+        label   = "S2 — Long ETH / Short BTC"
+
+        reasons = []
+        if pct_r <= 25:
+            reasons.append(f"Ratio *{pct_r}th percentile* — ETH murah secara historis ({window}d)")
+        if ext["pct_from_low"] <= 3.0:
+            reasons.append(f"Ratio *{ext['pct_from_low']:.2f}%* dari {window}d low — mendekati dasar")
+        if z is not None and z <= -1.0:
+            reasons.append(f"Z-score *{z:+.2f}σ* — ETH secara statistik murah vs BTC")
+        if ext["revert_to_avg"] > 0.5:
+            reasons.append(f"Mean revert ke avg butuh ETH naik *{ext['revert_to_avg']:.2f}%* vs BTC")
+
+        if pct_r <= 10:
+            timing = "🟢 *Timing sangat baik* — ratio di zona ekstrem bawah, bounce probability tinggi"
+        elif pct_r <= 25:
+            timing = "🟡 *Timing baik* — ratio depressed, tapi belum di dasar ekstrem"
+        elif pct_r <= 40:
+            timing = "🟠 *Timing cukup* — ratio di bawah avg, bisa turun lebih dulu sebelum bounce"
+        else:
+            timing = "🔴 *Timing kurang* — ratio belum cukup rendah untuk S2 yang optimal"
+
+        if pct_r <= 10:
+            risk = f"⚠️ *Risk:* Ratio bisa terus turun (ETH bisa terus underperform BTC)"
+        elif pct_r <= 25:
+            risk = f"⚠️ *Risk:* Kalau ratio tembus {lo_r:.5f} (low), gap bisa melebar lebih jauh"
+        else:
+            risk = "⚠️ *Risk:* Ratio belum di zona optimal S2 — conviction rendah"
+
+        entry_note = (
+            f"_💡 Mentor rule: ratio ≤25th pct = konfirmasi tambahan untuk S2_\n"
+            f"_Sekarang {pct_r}th → {'✅ terpenuhi' if pct_r <= 25 else '❌ belum'}_"
+        )
+
+        reason_block = "\n".join(f"│ ✅ {r}" for r in reasons) if reasons else "│ Belum ada sinyal kuat untuk S2"
+
+        return (
+            f"*{stars} {label}*\n"
+            f"┌─────────────────────\n"
+            f"│ Percentile:  *{pct_r}th* dari {window}d history\n"
+            f"│ Dari low:    +{ext['pct_from_low']:.2f}% ({ext['pct_from_low']:.2f}% di atas dasar)\n"
+            f"│ Dari avg:    revert *{ext['revert_to_avg']:+.2f}%* ke {avg_r:.5f}\n"
+            f"│ Z-score:     {z_str}\n"
+            f"│ Pos range:   {ext['pos_in_range']:.0f}% (0=low, 100=high)\n"
+            f"├─────────────────────\n"
+            f"{reason_block}\n"
+            f"├─────────────────────\n"
+            f"│ {timing}\n"
+            f"└─────────────────────\n"
+            f"{risk}\n"
+            f"{entry_note}"
+        )
+
+
 def handle_ratio_command(reply_chat: str) -> None:
-    """ETH/BTC ratio percentile monitor."""
+    """ETH/BTC ratio percentile monitor — detail conviction breakdown."""
     curr_r, avg_r, hi_r, lo_r, pct_r = calc_ratio_percentile()
 
     if curr_r is None:
@@ -1597,9 +1789,9 @@ def handle_ratio_command(reply_chat: str) -> None:
         return
 
     window       = settings["ratio_window_days"]
-    revert_pct   = (avg_r - curr_r) / curr_r * 100 if avg_r else 0
-    stars_s1, d1 = get_ratio_conviction(Strategy.S1, pct_r)
-    stars_s2, d2 = get_ratio_conviction(Strategy.S2, pct_r)
+    stars_s1, _  = get_ratio_conviction(Strategy.S1, pct_r)
+    stars_s2, _  = get_ratio_conviction(Strategy.S2, pct_r)
+    ext          = _calc_ratio_extended_stats(curr_r, avg_r, hi_r, lo_r, pct_r)
 
     if pct_r <= 20:     signal = "🟢 *ETH sangat murah vs BTC* — momentum S2 kuat"
     elif pct_r <= 40:   signal = "🟡 *ETH relatif murah* — setup S2 cukup bagus"
@@ -1610,6 +1802,9 @@ def handle_ratio_command(reply_chat: str) -> None:
     bar_pos = min(10, int(pct_r / 10))
     bar     = "─" * bar_pos + "●" + "─" * (10 - bar_pos)
 
+    detail_s1 = _build_conviction_detail(Strategy.S1, stars_s1, pct_r, curr_r, avg_r, hi_r, lo_r, ext)
+    detail_s2 = _build_conviction_detail(Strategy.S2, stars_s2, pct_r, curr_r, avg_r, hi_r, lo_r, ext)
+
     send_reply(
         f"📈 *ETH/BTC Ratio Monitor*\n"
         f"\n"
@@ -1619,7 +1814,7 @@ def handle_ratio_command(reply_chat: str) -> None:
         f"│ {window}d high:  {hi_r:.5f}\n"
         f"│ {window}d low:   {lo_r:.5f}\n"
         f"│ Percentile: *{pct_r}th*\n"
-        f"│ Revert est: {revert_pct:+.2f}% ke avg\n"
+        f"│ Revert est: {ext['revert_to_avg']:+.2f}% ke avg\n"
         f"└─────────────────────\n"
         f"\n"
         f"`[lo]─{bar}─[hi]`\n"
@@ -1627,9 +1822,11 @@ def handle_ratio_command(reply_chat: str) -> None:
         f"\n"
         f"{signal}\n"
         f"\n"
-        f"*Conviction per strategi:*\n"
-        f"S1 (Long BTC): {stars_s1} — {d1}\n"
-        f"S2 (Long ETH): {stars_s2} — {d2}\n"
+        f"──────────────────────\n"
+        f"{detail_s1}\n"
+        f"\n"
+        f"──────────────────────\n"
+        f"{detail_s2}\n"
         f"\n"
         f"_Dari {len(price_history)} price points~_",
         reply_chat,
