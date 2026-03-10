@@ -115,13 +115,23 @@ settings = {
     "sl_pct":                 1.0,
     "redis_refresh_minutes":  REDIS_REFRESH_MINUTES,
     # — Swing / Day Trade —
-    "capital":                0.0,    # modal user dalam USD, 0 = belum diset
+    "capital":                0.0,
     "ratio_window_days":      RATIO_WINDOW_DAYS,
+    # — Exit Confirmation (anti false-exit) —
+    # Lapis 1: gap harus stay di zona exit selama N scan berturut-turut
+    "exit_confirm_scans":     2,       # 0 = langsung exit (behaviour lama)
+    # Lapis 2: gap harus konvergen sejauh X% lebih dalam dari exit_threshold
+    "exit_confirm_buffer":    0.0,     # 0.0 = disable; misal 0.3 = exit di threshold - 0.3%
+    # Lapis 3: P&L gate — exit hanya kalau net P&L ≥ X% dari margin (pakai pos_data)
+    "exit_pnl_gate":          0.0,     # 0.0 = disable; misal 0.5 = minimal +0.5% net
 }
 
 last_update_id:      int                = 0
 last_heartbeat_time: Optional[datetime] = None
 last_redis_refresh:  Optional[datetime] = None
+
+# Exit confirmation counter — reset setiap kali gap keluar zona exit
+exit_confirm_count:  int                = 0
 
 scan_stats = {
     "count":          0,
@@ -390,6 +400,7 @@ def process_commands() -> None:
             "/clearpos":    lambda: handle_clearpos_command(chat_id),
             "/setfunding":  lambda: handle_setfunding_command(args, chat_id),
             "/velocity":    lambda: handle_velocity_command(chat_id),
+            "/exitconf":    lambda: handle_exitconf_command(args, chat_id),
         }
         if command in dispatch:
             dispatch[command]()
@@ -432,6 +443,123 @@ def analyze_gap_driver(
         explain = f"ETH {eth_contrib:.0f}% / BTC {btc_contrib:.0f}% — keduanya berkontribusi"
 
     return driver, emoji, explain
+
+
+def detect_market_regime() -> dict:
+    """
+    Deteksi regime pasar BTC (dan ETH) dari price_history.
+    Menggunakan multi-timeframe: 1h, 4h, 24h + volatility (ATR proxy).
+
+    Returns dict:
+      regime       : "BULLISH" / "BEARISH" / "CONSOLIDASI"
+      strength     : "Kuat" / "Moderat" / "Lemah"
+      emoji        : str
+      btc_1h/4h/24h: % change
+      eth_1h/4h/24h: % change
+      volatility   : "Tinggi" / "Normal" / "Rendah"
+      vol_pct      : float (avg candle range % per period)
+      description  : str (satu baris penjelasan)
+      implications : str (implikasi untuk pairs strategy)
+    """
+    if len(price_history) < 3:
+        return {"regime": "N/A", "emoji": "⚪", "strength": "—",
+                "description": "Data belum cukup", "implications": "—",
+                "btc_1h": None, "btc_4h": None, "btc_24h": None,
+                "eth_1h": None, "eth_4h": None, "eth_24h": None,
+                "volatility": "—", "vol_pct": 0.0}
+
+    now      = price_history[-1]
+    btc_now  = float(now.btc)
+    eth_now  = float(now.eth)
+    interval = settings["scan_interval"]   # detik per scan
+
+    def _pct_change(minutes: int):
+        """Ambil price N menit lalu, hitung % change."""
+        scans_back = max(1, int(minutes * 60 / interval))
+        if len(price_history) <= scans_back:
+            return None, None
+        old = price_history[-scans_back - 1]
+        btc_ret = (btc_now - float(old.btc)) / float(old.btc) * 100
+        eth_ret = (eth_now - float(old.eth)) / float(old.eth) * 100
+        return btc_ret, eth_ret
+
+    btc_1h,  eth_1h  = _pct_change(60)
+    btc_4h,  eth_4h  = _pct_change(240)
+    btc_24h, eth_24h = _pct_change(1440)
+
+    # Volatility: rata-rata |Δ%| per scan selama 60 menit terakhir
+    scans_1h   = max(2, int(3600 / interval))
+    window_pts = price_history[-scans_1h:] if len(price_history) >= scans_1h else price_history
+    vol_samples = []
+    for i in range(1, len(window_pts)):
+        prev_b = float(window_pts[i-1].btc)
+        curr_b = float(window_pts[i].btc)
+        if prev_b > 0:
+            vol_samples.append(abs(curr_b - prev_b) / prev_b * 100)
+    avg_vol = sum(vol_samples) / len(vol_samples) if vol_samples else 0.0
+
+    if avg_vol >= 0.15:     vol_label = "Tinggi 🔥"
+    elif avg_vol >= 0.05:   vol_label = "Normal 📊"
+    else:                   vol_label = "Rendah 😴"
+
+    # Regime logic — pakai weighted vote dari 3 timeframe
+    # Bobot: 1h=1, 4h=2, 24h=3 (4h dan 24h lebih penting)
+    def _vote(ret, threshold=0.5):
+        if ret is None: return 0
+        if ret > threshold:  return 1    # bull
+        if ret < -threshold: return -1   # bear
+        return 0                          # konsolidasi
+
+    votes = (
+        _vote(btc_1h,  0.3) * 1 +
+        _vote(btc_4h,  0.8) * 2 +
+        _vote(btc_24h, 1.5) * 3
+    )
+
+    # Tentukan regime dari total votes (-6 s/d +6)
+    if votes >= 4:      regime, emoji = "BULLISH",     "🟢"
+    elif votes >= 1:    regime, emoji = "BULLISH",     "🟡"
+    elif votes <= -4:   regime, emoji = "BEARISH",     "🔴"
+    elif votes <= -1:   regime, emoji = "BEARISH",     "🟠"
+    else:               regime, emoji = "KONSOLIDASI", "⚪"
+
+    if abs(votes) >= 4: strength = "Kuat"
+    elif abs(votes) >= 2: strength = "Moderat"
+    else: strength = "Lemah"
+
+    # Description
+    if regime == "BULLISH":
+        desc = f"BTC dalam tren naik — momentum {'kuat' if strength == 'Kuat' else 'moderat'}"
+    elif regime == "BEARISH":
+        desc = f"BTC dalam tren turun — momentum {'kuat' if strength == 'Kuat' else 'moderat'}"
+    else:
+        desc = "BTC bergerak sideways — tidak ada tren jelas"
+
+    # Implikasi untuk pairs strategy
+    if regime == "BULLISH" and strength == "Kuat":
+        impl = "⚠️ Bull kuat: S1 (Short ETH) lebih berisiko kalau ETH ikut naik. S2 favored kalau ETH lag."
+    elif regime == "BULLISH":
+        impl = "S1 moderat OK, tapi awasi ETH — kalau ETH ikut pump, gap bisa melebar dulu."
+    elif regime == "BEARISH" and strength == "Kuat":
+        impl = "⚠️ Bear kuat: kedua koin turun. Gap lebih mudah terbentuk S1 (BTC bertahan lebih baik dari ETH)."
+    elif regime == "BEARISH":
+        impl = "Bear moderat — pairs trade biasanya lebih mudah di kondisi ini, spread gap lebih predictable."
+    else:
+        impl = "✅ Konsolidasi ideal untuk pairs trade — gap lebih mudah revert, volatility rendah = SL jarang kena."
+
+    return {
+        "regime":     regime,
+        "emoji":      emoji,
+        "strength":   strength,
+        "votes":      votes,
+        "btc_1h":     btc_1h,  "eth_1h":  eth_1h,
+        "btc_4h":     btc_4h,  "eth_4h":  eth_4h,
+        "btc_24h":    btc_24h, "eth_24h": eth_24h,
+        "volatility": vol_label,
+        "vol_pct":    avg_vol,
+        "description": desc,
+        "implications": impl,
+    }
 
 
 def get_convergence_hint(strategy: Strategy, driver: str) -> str:
@@ -1425,7 +1553,16 @@ def build_entry_message(
         scen_a_str   = f"ETH naik ke *${eth_a:,.2f}*"  if eth_a else "N/A"
         scen_b_str   = f"BTC turun ke *${btc_b:,.2f}*" if btc_b else "N/A"
 
-    # ── 5. Dollar-Neutral Sizing ──────────────────────────────────────────────
+    # ── 5. Market Regime ─────────────────────────────────────────────────────
+    reg = detect_market_regime()
+    regime_line = (
+        f"│ Market:   {reg['emoji']} *{reg['regime']}* {reg['strength']}"
+        + (f" — ⚠️ Hati-hati" if reg["regime"] == "BEARISH" and reg["strength"] == "Kuat" else "")
+        + "\n"
+        + (f"│ _{reg['implications']}_\n" if reg["regime"] != "KONSOLIDASI" else "│ _✅ Kondisi ideal untuk pairs trade_\n")
+    )
+
+    # ── 6. Dollar-Neutral Sizing ──────────────────────────────────────────────
     sizing_section = ""
     half, eth_qty, btc_qty = calc_sizing(btc_now, eth_now)
     if half > 0:
@@ -1482,7 +1619,12 @@ def build_entry_message(
         f"│ _{conviction}_\n"
         f"└─────────────────────\n"
         f"\n"
-        f"*── 3. Target & Proteksi ──*\n"
+        f"*── 3. Market Regime ──*\n"
+        f"┌─────────────────────\n"
+        f"{regime_line}"
+        f"└─────────────────────\n"
+        f"\n"
+        f"*── 4. Target & Proteksi ──*\n"
         f"┌─────────────────────\n"
         f"│ TP gap:   {tp_gap:+.2f}% _(exit threshold)_\n"
         f"│ ETH TP:   {eth_tp_str}\n"
@@ -1490,7 +1632,7 @@ def build_entry_message(
         f"│ Trail SL: {tsl_initial:+.2f}% → ETH {eth_tsl_str}\n"
         f"└─────────────────────\n"
         f"\n"
-        f"*── 4. Skenario Konvergensi ──*\n"
+        f"*── 5. Skenario Konvergensi ──*\n"
         f"• *A — {scen_a_label}:* {scen_a_str}\n"
         f"• *B — {scen_b_label}:* {scen_b_str}\n"
         f"\n"
@@ -1502,17 +1644,20 @@ def build_entry_message(
 
 
 def build_exit_message(
-    btc_ret: Decimal,
-    eth_ret: Decimal,
-    gap:     Decimal,
+    btc_ret:      Decimal,
+    eth_ret:      Decimal,
+    gap:          Decimal,
+    confirm_note: str = "",
 ) -> str:
     lb            = get_lookback_label()
     gap_f         = float(gap)
     leg_e, leg_b, net = calc_net_pnl(active_strategy, gap_f) if active_strategy else (None, None, None)
     net_section   = _build_pnl_section(leg_e, leg_b, net)
+    conf_line     = f"_{confirm_note}_\n" if confirm_note else ""
     return (
         f"Ara ara~!!! Ufufufu... (◕▿◕)\n"
         f"✅ *EXIT — Gap Konvergen!*\n"
+        f"{conf_line}"
         f"\n"
         f"*{lb} Change:*\n"
         f"┌─────────────────────\n"
@@ -1892,6 +2037,7 @@ def reset_to_scan() -> None:
     global entry_gap_value, trailing_gap_best
     global entry_btc_price, entry_eth_price, entry_btc_lb, entry_eth_lb
     global entry_btc_ret, entry_eth_ret, entry_driver
+    global exit_confirm_count
 
     current_mode      = Mode.SCAN
     active_strategy   = None
@@ -1904,6 +2050,7 @@ def reset_to_scan() -> None:
     entry_btc_ret     = None
     entry_eth_ret     = None
     entry_driver      = None
+    exit_confirm_count = 0
 
 
 # =============================================================================
@@ -2075,17 +2222,75 @@ def evaluate_and_transition(
         if check_sltp(gap_float, btc_ret, eth_ret, gap):
             return
 
-        if active_strategy == Strategy.S1 and gap_float <= exit_thresh:
-            send_alert(build_exit_message(btc_ret, eth_ret, gap))
-            logger.info(f"EXIT S1. Gap: {gap_float:.2f}%")
-            reset_to_scan()
-            return
+        # Ambil setting konfirmasi
+        confirm_scans  = int(settings["exit_confirm_scans"])
+        confirm_buffer = float(settings["exit_confirm_buffer"])
+        pnl_gate       = float(settings["exit_pnl_gate"])
 
-        if active_strategy == Strategy.S2 and gap_float >= -exit_thresh:
-            send_alert(build_exit_message(btc_ret, eth_ret, gap))
-            logger.info(f"EXIT S2. Gap: {gap_float:.2f}%")
-            reset_to_scan()
-            return
+        # Hitung effective exit level (threshold + buffer ekstra)
+        # S1: exit kalau gap ≤ exit_thresh - buffer (lebih dalam ke positif)
+        # S2: exit kalau gap ≥ -exit_thresh + buffer (lebih dalam ke negatif)
+        s1_exit_level = exit_thresh - confirm_buffer
+        s2_exit_level = -exit_thresh + confirm_buffer
+
+        in_exit_zone = (
+            (active_strategy == Strategy.S1 and gap_float <= s1_exit_level) or
+            (active_strategy == Strategy.S2 and gap_float >= s2_exit_level)
+        )
+
+        if in_exit_zone:
+            exit_confirm_count += 1
+
+            # Lapis 3: P&L gate check (kalau diset dan pos_data tersedia)
+            pnl_gate_ok = True
+            pnl_gate_msg = ""
+            if pnl_gate > 0 and pos_data.get("eth_entry_price"):
+                h = calc_position_pnl()
+                if h:
+                    net_pct = h.get("net_pnl_pct", 0)
+                    if net_pct < pnl_gate:
+                        pnl_gate_ok = False
+                        pnl_gate_msg = f"net P&L {net_pct:.2f}% < gate {pnl_gate:.2f}%"
+
+            # Lapis 1+2+3: semua harus pass
+            if exit_confirm_count >= max(1, confirm_scans) and pnl_gate_ok:
+                confirm_note = ""
+                if confirm_scans > 1:
+                    confirm_note = f" ✅ Konfirmasi {exit_confirm_count} scan"
+                if confirm_buffer > 0:
+                    confirm_note += f" | buffer +{confirm_buffer}%"
+                if pnl_gate > 0:
+                    h = calc_position_pnl()
+                    net_str = f"{h['net_pnl_pct']:.2f}%" if h else "N/A"
+                    confirm_note += f" | P&L gate ✅ ({net_str})"
+
+                send_alert(build_exit_message(btc_ret, eth_ret, gap, confirm_note=confirm_note))
+                logger.info(f"EXIT {active_strategy.value}. Gap: {gap_float:.2f}% "
+                            f"| Confirmed: {exit_confirm_count} scans | Buffer: {confirm_buffer}%")
+                reset_to_scan()
+                return
+            else:
+                # Masih dalam konfirmasi — kirim peringatan saja (bukan exit)
+                if exit_confirm_count == 1:
+                    # Scan pertama masuk zona — kirim pre-exit alert
+                    remaining = max(1, confirm_scans) - exit_confirm_count
+                    pnl_wait  = f" | Menunggu P&L ≥{pnl_gate:.1f}%" if not pnl_gate_ok else ""
+                    if confirm_scans > 1 or not pnl_gate_ok:
+                        send_alert(
+                            f"⏳ *Pre-exit: Gap menyentuh TP zone*\n"
+                            f"Gap: {gap_float:+.2f}% | TP level: ±{exit_thresh}%\n"
+                            f"Menunggu konfirmasi {remaining} scan lagi{pnl_wait}~\n"
+                            f"_Sabar sebentar~ (◕ω◕)_"
+                        )
+                        logger.info(f"PRE-EXIT {active_strategy.value}. Gap: {gap_float:.2f}% "
+                                    f"| Need {remaining} more scans{pnl_wait}")
+                elif not pnl_gate_ok:
+                    logger.info(f"EXIT HELD by P&L gate: {pnl_gate_msg}")
+        else:
+            # Gap keluar dari exit zone — reset counter
+            if exit_confirm_count > 0:
+                logger.info(f"Exit zone lost. Resetting confirm counter ({exit_confirm_count}→0). Gap: {gap_float:.2f}%")
+                exit_confirm_count = 0
 
         if active_strategy == Strategy.S1 and gap_float >= invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S1, btc_ret, eth_ret, gap))
@@ -2113,6 +2318,15 @@ def handle_settings_command(reply_chat: str) -> None:
     rr_str  = f"{rr} menit" if rr > 0 else "Off"
     peak_s  = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "Belum diset~"
+    ec_scans = int(settings["exit_confirm_scans"])
+    ec_buf   = float(settings["exit_confirm_buffer"])
+    ec_pnl   = float(settings["exit_pnl_gate"])
+    ec_str   = (
+        f"{ec_scans} scan" + (f" + {ec_buf:.2f}% buffer" if ec_buf > 0 else "") +
+        (f" + P&L gate {ec_pnl:.1f}%" if ec_pnl > 0 else "")
+        if ec_scans > 0 or ec_buf > 0 or ec_pnl > 0
+        else "OFF (langsung exit)"
+    )
     send_reply(
         f"⚙️ *Settings — Akeno jaga semuanya~ Ufufufu...*\n"
         f"\n"
@@ -2125,6 +2339,7 @@ def handle_settings_command(reply_chat: str) -> None:
         f"⚠️ Invalidation:   ±{settings['invalidation_threshold']}%\n"
         f"🔍 Peak Mode:      {peak_s} ({settings['peak_reversal']}% reversal)\n"
         f"🛑 Trailing SL:    {settings['sl_pct']}%\n"
+        f"🛡️ Exit Confirm:   {ec_str}\n"
         f"💰 Modal:          {cap_str}\n"
         f"📈 Ratio Window:   {settings['ratio_window_days']}d\n"
         f"\n"
@@ -2432,6 +2647,27 @@ def handle_analysis_command(reply_chat: str) -> None:
     # Driver
     drv, drv_e, drv_ex = analyze_gap_driver(float(btc_r), float(eth_r), gap_f)
 
+    # Market Regime
+    reg = detect_market_regime()
+
+    def _pct(v): return f"{v:+.2f}%" if v is not None else "N/A"
+
+    reg_block = (
+        f"*🌍 Market Regime:*\n"
+        f"┌─────────────────────\n"
+        f"│ Regime:  {reg['emoji']} *{reg['regime']}* — {reg['strength']}\n"
+        f"│ _{reg['description']}_\n"
+        f"│\n"
+        f"│          BTC        ETH\n"
+        f"│ 1h:   {_pct(reg['btc_1h']):>8}   {_pct(reg['eth_1h'])}\n"
+        f"│ 4h:   {_pct(reg['btc_4h']):>8}   {_pct(reg['eth_4h'])}\n"
+        f"│ 24h:  {_pct(reg['btc_24h']):>8}   {_pct(reg['eth_24h'])}\n"
+        f"│\n"
+        f"│ Volatilitas: {reg['volatility']} ({reg['vol_pct']:.3f}%/scan avg 1h)\n"
+        f"└─────────────────────\n"
+        f"_{reg['implications']}_\n"
+    )
+
     # Ratio
     curr_r, avg_r, _, _, pct_r = calc_ratio_percentile()
     ratio_str = f"{curr_r:.5f} ({pct_r}th percentile)" if curr_r else "N/A"
@@ -2485,6 +2721,7 @@ def handle_analysis_command(reply_chat: str) -> None:
         f"🧠 *Full Market Analysis*\n"
         f"_Akeno analisis semuanya~ Ufufufu... (◕‿◕)_\n"
         f"\n"
+        f"{reg_block}\n"
         f"*📊 Gap ({lb}):*\n"
         f"┌─────────────────────\n"
         f"│ BTC:    {format_value(btc_r)}%\n"
@@ -3023,6 +3260,106 @@ def handle_velocity_command(reply_chat: str) -> None:
         f"_Dari {vel['n_pts']} pts terakhir~_",
         reply_chat,
     )
+
+
+def handle_exitconf_command(args: list, reply_chat: str) -> None:
+    """
+    Konfigurasi 3-lapis exit confirmation.
+
+    /exitconf scans <n>       — gap harus stay N scan berturut-turut (default 2)
+    /exitconf buffer <pct>    — gap harus masuk buffer% lebih dalam dari threshold
+    /exitconf pnl <pct>       — exit hanya kalau net P&L ≥ pct% dari margin
+    /exitconf off             — matikan semua konfirmasi (langsung exit)
+    /exitconf show            — tampilkan setting sekarang
+    """
+    conf_s = int(settings["exit_confirm_scans"])
+    conf_b = float(settings["exit_confirm_buffer"])
+    pnl_g  = float(settings["exit_pnl_gate"])
+
+    if not args or args[0].lower() == "show":
+        mode_s1 = settings["exit_threshold"] - conf_b
+        mode_s2 = settings["exit_threshold"] - conf_b
+        send_reply(
+            f"*🛡️ Exit Confirmation Settings*\n"
+            f"\n"
+            f"┌─────────────────────\n"
+            f"│ Lapis 1 — Scan konfirmasi: *{conf_s}x*\n"
+            f"│  Gap harus stay {conf_s} scan berturut-turut sebelum exit\n"
+            f"│  _(0 = langsung exit, behaviour lama)_\n"
+            f"│\n"
+            f"│ Lapis 2 — Buffer: *{conf_b:.2f}%*\n"
+            f"│  Efektif exit S1 di gap ≤ +{mode_s1:.2f}%\n"
+            f"│  Efektif exit S2 di gap ≥ -{mode_s2:.2f}%\n"
+            f"│  _(0.0 = tepat di threshold)_\n"
+            f"│\n"
+            f"│ Lapis 3 — P&L gate: *{pnl_g:.2f}%*\n"
+            f"│  Exit hanya kalau net P&L ≥ {pnl_g:.2f}% dari margin\n"
+            f"│  _(0.0 = disable, tidak cek P&L)_\n"
+            f"└─────────────────────\n"
+            f"\n"
+            f"*Commands:*\n"
+            f"`/exitconf scans 3` — konfirmasi 3 scan\n"
+            f"`/exitconf buffer 0.3` — buffer 0.3% lebih dalam\n"
+            f"`/exitconf pnl 0.5` — exit kalau net P&L ≥ 0.5%\n"
+            f"`/exitconf off` — matikan semua (langsung exit)\n",
+            reply_chat,
+        )
+        return
+
+    if args[0].lower() == "off":
+        settings["exit_confirm_scans"]  = 0
+        settings["exit_confirm_buffer"] = 0.0
+        settings["exit_pnl_gate"]       = 0.0
+        send_reply(
+            "⚡ *Exit confirmation dimatikan~*\n"
+            "Bot akan exit langsung saat gap menyentuh threshold~ (behaviour lama)\n",
+            reply_chat,
+        )
+        return
+
+    if len(args) < 2:
+        send_reply("Usage: `/exitconf scans|buffer|pnl <nilai>` atau `/exitconf off`~", reply_chat)
+        return
+
+    try:
+        key = args[0].lower()
+        val = float(args[1].replace(",", ""))
+        if key == "scans":
+            settings["exit_confirm_scans"] = max(0, int(val))
+            send_reply(
+                f"✅ Scan konfirmasi: *{int(val)}x*\n"
+                f"_Gap harus stay {int(val)} scan sebelum exit~_",
+                reply_chat,
+            )
+        elif key == "buffer":
+            settings["exit_confirm_buffer"] = max(0.0, val)
+            et     = settings["exit_threshold"]
+            eff_s1 = et - val
+            eff_s2 = et - val
+            send_reply(
+                f"✅ Exit buffer: *{val:.2f}%*\n"
+                f"_Efektif exit S1 di gap ≤ +{eff_s1:.2f}% | S2 di gap ≥ -{eff_s2:.2f}%~_",
+                reply_chat,
+            )
+        elif key in ("pnl", "pnlgate"):
+            settings["exit_pnl_gate"] = max(0.0, val)
+            if val > 0 and pos_data.get("eth_entry_price") is None:
+                send_reply(
+                    f"✅ P&L gate: *{val:.2f}%*\n"
+                    f"_Bot akan tahan exit sampai net P&L ≥ {val:.2f}%~_\n"
+                    f"⚠️ `/setpos` belum diset — P&L gate butuh data posisi~",
+                    reply_chat,
+                )
+            else:
+                send_reply(
+                    f"✅ P&L gate: *{val:.2f}%*\n"
+                    f"_Bot akan tahan exit sampai net P&L ≥ {val:.2f}%~_",
+                    reply_chat,
+                )
+        else:
+            send_reply("Key tidak dikenal~ Gunakan: `scans`, `buffer`, atau `pnl`~", reply_chat)
+    except (ValueError, IndexError):
+        send_reply("Format salah~ Contoh: `/exitconf scans 2`~", reply_chat)
 
 
 def handle_health_command(reply_chat: str) -> None:
