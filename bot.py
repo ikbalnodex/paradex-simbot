@@ -133,6 +133,11 @@ settings = {
     "sim_margin_usd":         100.0,   # margin per leg dalam USD
     "sim_leverage":           10.0,    # leverage (sama untuk dua leg)
     "sim_fee_pct":            0.06,    # taker fee % per side (default Bybit/OKX)
+    # Regime Alignment Filter: skip entry kalau arah market ≠ arah gap
+    # S1 butuh market pump (BTC+ETH naik), S2 butuh market dump (BTC+ETH turun)
+    # Gap+ di tengah dump = BTC jatuh, ETH kurang jatuh → bukan S1 murni
+    # Gap- di tengah pump = BTC naik, ETH kurang naik → bukan S2 murni
+    "sim_regime_filter":      True,
 }
 
 # Simulation trade state — diisi otomatis saat entry signal, dikosongkan saat exit
@@ -900,6 +905,58 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
         return ""
     if sim_trade["active"]:
         return "_⚠️ Sim: posisi sudah aktif, skip open~_\n"
+
+    # ── Regime Alignment Filter ──────────────────────────────────────────────
+    # Logika: gap arah harus selaras dengan arah market
+    #   S1 (gap+, ETH outperform) → valid hanya saat market PUMP
+    #   S2 (gap-, ETH underperform) → valid hanya saat market DUMP
+    #
+    # Kasus yang dihindari:
+    #   Gap- + Pump = BTC yang kencang naik, ETH lemah → kalau short BTC = lawan trend
+    #   Gap+ + Dump = BTC yang kencang turun, ETH kuat  → kalau short ETH = lawan trend
+    if settings["sim_regime_filter"]:
+        btc_r = entry_btc_ret   # float, return BTC dari lookback
+        eth_r = entry_eth_ret   # float, return ETH dari lookback
+        # Tentukan arah market dari BTC (market leader)
+        # Pump  = BTC ret > 0
+        # Dump  = BTC ret < 0
+        # Netral = sekitar 0 — tetap izinkan, tidak ada bias kuat
+        market_pump = (btc_r > 0)
+        market_dump = (btc_r < 0)
+
+        skip_reason = None
+        if strategy == Strategy.S1 and market_dump:
+            # Gap+ tapi market dump → BTC turun lebih dalam, ETH lebih tahan
+            # Short ETH + Long BTC = lawan trend dump
+            skip_reason = (
+                f"Gap+ tapi market *DUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
+                f"BTC turun lebih dalam, ETH hanya lebih tahan — Short ETH = lawan trend\n"
+                f"_S1 valid hanya saat market pump, anata~_"
+            )
+        elif strategy == Strategy.S2 and market_pump:
+            # Gap- tapi market pump → BTC naik lebih kencang, ETH tertinggal
+            # Long ETH + Short BTC = lawan trend pump
+            skip_reason = (
+                f"Gap- tapi market *PUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
+                f"BTC naik lebih kencang, ETH hanya tertinggal — Short BTC = lawan trend\n"
+                f"_S2 valid hanya saat market dump, anata~_"
+            )
+
+        if skip_reason:
+            logger.info(
+                f"SIM SKIP {strategy.value} — regime mismatch: "
+                f"BTC {btc_r:+.2f}% ETH {eth_r:+.2f}%"
+            )
+            return (
+                f"\n"
+                f"🤖 *[SIM] Entry Dilewati — Regime Mismatch* ⚠️\n"
+                f"┌─────────────────────\n"
+                f"│ Strategy: {strategy.value}\n"
+                f"│ {skip_reason}\n"
+                f"└─────────────────────\n"
+                f"_Filter bisa dimatikan: `/sim regime off`_\n"
+            )
+    # ────────────────────────────────────────────────────────────────────────
 
     margin  = float(settings["sim_margin_usd"])
     lev     = float(settings["sim_leverage"])
@@ -3613,6 +3670,7 @@ def handle_sim_command(args: list, reply_chat: str) -> None:
                 )
         sim_state = f"{'🟢 AKTIF' if enabled else '🔴 MATI'}"
         pos_state = f"{'📍 Posisi terbuka — ' + (sim_trade['strategy'] or '') if active else '💤 Tidak ada posisi'}"
+        regime_s  = "✅ ON" if settings["sim_regime_filter"] else "❌ OFF"
         send_reply(
             f"🤖 *Simulation Mode*\n"
             f"\n"
@@ -3622,12 +3680,14 @@ def handle_sim_command(args: list, reply_chat: str) -> None:
             f"Lev:     {lev:.0f}x\n"
             f"Fee:     {fee:.3f}% per side\n"
             f"Trades:  {n_trades} total\n"
+            f"Regime filter: {regime_s}\n"
             f"{pnl_str}\n"
             f"*Commands:*\n"
             f"`/sim on` `/sim off`\n"
             f"`/sim margin <usd>`\n"
             f"`/sim lev <n>`\n"
             f"`/sim fee <pct>`\n"
+            f"`/sim regime on|off` — filter market direction\n"
             f"`/sim reset` — hapus history\n"
             f"`/simstats` — rekap semua trade",
             reply_chat,
@@ -3703,6 +3763,46 @@ def handle_sim_command(args: list, reply_chat: str) -> None:
     elif cmd == "reset":
         sim_trade["history"].clear()
         send_reply("✅ History trades direset, anata~ (◕‿◕)", reply_chat)
+
+    elif cmd == "regime":
+        sub = args[1].lower() if len(args) > 1 else ""
+        if sub == "on":
+            settings["sim_regime_filter"] = True
+            send_reply(
+                "✅ *Regime filter ON, anata~* (◕‿◕)\n"
+                "\n"
+                "Sim hanya entry kalau arah market selaras gap:\n"
+                "• S1 (gap+) → butuh market *pump* (BTC naik)\n"
+                "• S2 (gap-) → butuh market *dump* (BTC turun)\n"
+                "\n"
+                "_Gap- di tengah pump = BTC kencang, bukan ETH lemah → skip~_",
+                reply_chat,
+            )
+        elif sub == "off":
+            settings["sim_regime_filter"] = False
+            send_reply(
+                "⚠️ *Regime filter OFF, anata~*\n"
+                "Sim akan entry semua sinyal gap tanpa cek arah market~\n"
+                "_Hati-hati: bisa masuk posisi lawan trend~_",
+                reply_chat,
+            )
+        else:
+            status = "✅ ON" if settings["sim_regime_filter"] else "❌ OFF"
+            send_reply(
+                f"*Regime Alignment Filter:* {status}\n"
+                "\n"
+                "*Logic filter:*\n"
+                "┌──────────────────────────────\n"
+                "│ Gap+  + Pump  → ✅ S1 entry\n"
+                "│ Gap-  + Dump  → ✅ S2 entry\n"
+                "│ Gap-  + Pump  → ❌ SKIP (BTC kencang, bukan ETH lemah)\n"
+                "│ Gap+  + Dump  → ❌ SKIP (BTC lemah, ETH tahan — Short ETH lawan trend)\n"
+                "└──────────────────────────────\n"
+                "\n"
+                "`/sim regime on`  — aktifkan filter\n"
+                "`/sim regime off` — matikan filter",
+                reply_chat,
+            )
 
     else:
         send_reply("Command tidak dikenal ya, anata~ Ketik `/sim` untuk daftar perintah~", reply_chat)
@@ -3802,6 +3902,7 @@ def handle_help_command(reply_chat: str) -> None:
         f"`/sim margin <usd>` — modal per leg (skrg ${margin:,.0f})\n"
         f"`/sim lev <n>`      — leverage (skrg {lev:.0f}x)\n"
         f"`/sim fee <pct>`    — taker fee (skrg {fee:.3f}%)\n"
+        f"`/sim regime on|off`— filter arah market\n"
         f"`/sim reset`        — hapus history trades\n"
         f"\n"
         f"*— Statistik —*\n"
