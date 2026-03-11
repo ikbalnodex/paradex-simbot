@@ -404,13 +404,7 @@ def process_commands() -> None:
         dispatch = {
             "/settings":  lambda: handle_settings_command(chat_id),
             "/status":    lambda: handle_status_command(chat_id),
-            "/help": lambda: (
-                handle_help_market_command(chat_id)  if args and args[0].lower() in ("market", "m") else
-                handle_help_pos_command(chat_id)     if args and args[0].lower() in ("pos", "p", "health") else
-                handle_help_config_command(chat_id)  if args and args[0].lower() in ("config", "c", "conf") else
-                handle_help_example_command(chat_id) if args and args[0].lower() in ("example", "ex", "contoh") else
-                handle_help_command(chat_id)
-            ),
+            "/help": lambda: handle_help_command(chat_id),
             "/start":     lambda: handle_help_command(chat_id),
             "/interval":  lambda: handle_interval_command(args, chat_id),
             "/threshold": lambda: handle_threshold_command(args, chat_id),
@@ -3787,25 +3781,36 @@ def handle_simstats_command(reply_chat: str) -> None:
 
 
 def handle_help_command(reply_chat: str) -> None:
-    peak_s  = "✅" if settings["peak_enabled"] else "❌"
-    cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "—"
-    pos_str = pos_data.get("strategy") or "—"
-    mode_s  = current_mode.value if current_mode else "SCAN"
+    enabled = settings["sim_enabled"]
+    margin  = settings["sim_margin_usd"]
+    lev     = settings["sim_leverage"]
+    fee     = settings["sim_fee_pct"]
+    n_trade = len(sim_trade["history"])
+    active  = sim_trade["active"]
     gap_s   = f"{float(scan_stats['last_gap']):+.2f}%" if scan_stats.get("last_gap") is not None else "—"
+    sim_s   = "🟢 ON" if enabled else "🔴 OFF"
+    pos_s   = f"📍 {sim_trade['strategy']}" if active else "💤 idle"
 
     send_reply(
-        f"📟 *Hinata — Menu Utama*\n"
-        f"_Gap: {gap_s} | Mode: {mode_s} | Peak: {peak_s} | Modal: {cap_str} | Pos: {pos_str}_\n"
+        f"🤖 *Hinata — Simulation Bot*\n"
+        f"_Gap: {gap_s} | Sim: {sim_s} | Posisi: {pos_s} | Trades: {n_trade}_\n"
         f"\n"
-        f"Silakan pilih, anata~\n"
+        f"*— Kontrol Simulasi —*\n"
+        f"`/sim`              — status & setting sekarang\n"
+        f"`/sim on`           — aktifkan auto-trade\n"
+        f"`/sim off`          — matikan auto-trade\n"
+        f"`/sim margin <usd>` — modal per leg (skrg ${margin:,.0f})\n"
+        f"`/sim lev <n>`      — leverage (skrg {lev:.0f}x)\n"
+        f"`/sim fee <pct>`    — taker fee (skrg {fee:.3f}%)\n"
+        f"`/sim reset`        — hapus history trades\n"
         f"\n"
-        f"📈 `/help market` — Analisis & sinyal\n"
-        f"🏥 `/help pos`    — Position tracker\n"
-        f"⚙️ `/help config` — Konfigurasi bot\n"
-        f"📋 `/help example`— Contoh perintah\n"
+        f"*— Statistik —*\n"
+        f"`/simstats`         — rekap semua trade & win rate\n"
         f"\n"
-        f"*Shortcut cepat:*\n"
-        f"`/analysis` `/ratio` `/health` `/status`",
+        f"*— Market & Status —*\n"
+        f"`/status`           — gap & mode sekarang\n"
+        f"`/analysis`         — snapshot lengkap\n"
+        f"`/threshold entry|exit|invalid <val>` — ubah threshold",
         reply_chat,
     )
 
