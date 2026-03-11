@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Senpai — Simulator Pairs Trade BTC/ETH
+Hinata — Simulator Pairs Trade BTC/ETH
 
-Senpai membaca data harga dari Redis (ditulis oleh Bot A),
+Hinata membaca data harga dari Redis secara mandiri,
 mendeteksi sinyal entry/exit secara mandiri, dan mensimulasikan
 eksekusi posisi secara otomatis.
 
@@ -29,11 +29,11 @@ from config import (
 # Konfigurasi — sesuaikan di sini
 # =============================================================================
 
-# Token & chat Telegram khusus sim bot (bisa pakai token berbeda)
+# Token & chat ID Telegram khusus Hinata (gunakan token terpisah dari bot utama)
 SIM_BOT_TOKEN   = "ISI_TOKEN_SIM_BOT_DISINI"
 SIM_CHAT_ID     = "ISI_CHAT_ID_DISINI"
 
-# Redis key yang dibaca dari Bot A
+# Redis key yang dibaca dari bot pengumpul harga
 REDIS_PRICE_KEY = "monk_bot:price_history"
 
 SCAN_INTERVAL   = 30    # detik antar scan
@@ -99,7 +99,7 @@ def send_message(text: str, chat_id: str = SIM_CHAT_ID) -> None:
             timeout=10,
         )
     except Exception as e:
-        logger.error(f"[Senpai] Gagal kirim pesan: {e}")
+        logger.error(f"[Hinata] Gagal kirim pesan: {e}")
 
 
 def get_updates() -> list:
@@ -114,11 +114,11 @@ def get_updates() -> list:
         if data.get("ok"):
             return data.get("result", [])
     except Exception as e:
-        logger.error(f"[Senpai] getUpdates error: {e}")
+        logger.error(f"[Hinata] getUpdates error: {e}")
     return []
 
 # =============================================================================
-# Redis — baca harga dari Bot A
+# Redis — baca harga dari bot pengumpul
 # =============================================================================
 
 def fetch_prices_from_redis() -> bool:
@@ -159,7 +159,7 @@ def fetch_prices_from_redis() -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"[Senpai] Redis error: {e}")
+        logger.error(f"[Hinata] Redis error: {e}")
         return False
 
 # =============================================================================
@@ -235,7 +235,7 @@ def open_position(strategy: str) -> None:
         f"```\n"
         f"_Gunakan /health untuk memantau PnL secara langsung._"
     )
-    logger.info(f"[Senpai] OPEN {strategy}: ETH {eth_qty:.4f}@{eth_price} | BTC {btc_qty:.6f}@{btc_price}")
+    logger.info(f"[Hinata] OPEN {strategy}: ETH {eth_qty:.4f}@{eth_price} | BTC {btc_qty:.6f}@{btc_price}")
 
 
 def close_position(reason: str = "EXIT") -> None:
@@ -324,9 +324,9 @@ def close_position(reason: str = "EXIT") -> None:
         f"Modal    : ${total_margin:.2f}\n"
         f"Durasi   : {dur_str}\n"
         f"```\n"
-        f"_Jumlah trade selesai: {len(trade_history)}. Ketik /pnl untuk statistik lengkap._"
+        f"_Jumlah trade selesai: {len(trade_history)}. Gunakan /pnl untuk melihat statistik lengkap._"
     )
-    logger.info(f"[Senpai] CLOSE {reason}: net ${net_pnl:.2f} ({net_pct:.2f}%)")
+    logger.info(f"[Hinata] CLOSE {reason}: net ${net_pnl:.2f} ({net_pct:.2f}%)")
 
 # =============================================================================
 # Kalkulasi PnL Aktif
@@ -375,7 +375,7 @@ def calc_live_pnl() -> Optional[dict]:
 # =============================================================================
 
 def scan_loop() -> None:
-    logger.info("[Senpai] Scan loop dimulai.")
+    logger.info("[Hinata] Scan loop dimulai.")
     while True:
         try:
             ok = fetch_prices_from_redis()
@@ -410,7 +410,7 @@ def scan_loop() -> None:
                     close_position("INVALID")
 
         except Exception as e:
-            logger.error(f"[Senpai] Scan error: {e}")
+            logger.error(f"[Hinata] Scan error: {e}")
 
         time.sleep(SCAN_INTERVAL)
 
@@ -447,7 +447,7 @@ def handle_sim(args: list, chat_id: str) -> None:
         sim_str = "🟢 Aktif" if enabled else "🔴 Nonaktif"
 
         send_message(
-            f"🤖 *Senpai — Status*\n"
+            f"🤖 *Hinata — Status*\n"
             f"\n"
             f"Status  : {sim_str}\n"
             f"Posisi  : {pos_str}\n"
@@ -490,7 +490,7 @@ def handle_sim(args: list, chat_id: str) -> None:
             f"Leverage       : {lev:.0f}x\n"
             f"Total eksposur : ${total:,.0f}\n"
             f"\n"
-            f"_Senpai akan membuka posisi secara otomatis saat gap mencapai ±{et}%._",
+            f"_Hinata akan membuka posisi secara otomatis saat gap mencapai ±{et}%._",
             chat_id,
         )
 
@@ -554,7 +554,7 @@ def handle_sim(args: list, chat_id: str) -> None:
             send_message("⚠️ Format: `/sim exit <pct>` — contoh: `/sim exit 0.2`", chat_id)
 
     else:
-        send_message("⚠️ Perintah tidak dikenal. Ketik `/sim` untuk daftar lengkap.", chat_id)
+        send_message("⚠️ Perintah tidak dikenali. Gunakan `/sim` untuk daftar lengkap.", chat_id)
 
 
 def handle_health(chat_id: str) -> None:
@@ -572,7 +572,7 @@ def handle_health(chat_id: str) -> None:
             f"ETH : {eth_str}\n"
             f"Gap : {gap_str}\n"
             f"\n"
-            f"_Senpai akan membuka posisi secara otomatis saat gap mencapai ±{settings['entry_thresh']}%._",
+            f"_Hinata akan membuka posisi secara otomatis saat gap mencapai ±{settings['entry_thresh']}%._",
             chat_id,
         )
         return
@@ -702,7 +702,7 @@ def handle_pnl(chat_id: str) -> None:
 
 def polling_loop() -> None:
     global last_update_id
-    logger.info("[Senpai] Polling loop dimulai.")
+    logger.info("[Hinata] Polling loop dimulai.")
     while True:
         try:
             updates = get_updates()
@@ -726,9 +726,9 @@ def polling_loop() -> None:
                     handle_pnl(chat_id)
                 elif command == "/start":
                     send_message(
-                        "👋 *Selamat datang di Senpai.*\n"
+                        "👋 *Selamat datang, Senpai.*\n"
                         "\n"
-                        "Senpai mensimulasikan pairs trade BTC/ETH secara otomatis "
+                        "Hinata akan mensimulasikan pairs trade BTC/ETH secara otomatis "
                         "berdasarkan sinyal gap yang terdeteksi dari data pasar.\n"
                         "\n"
                         "*Perintah tersedia:*\n"
@@ -748,7 +748,7 @@ def polling_loop() -> None:
                         chat_id,
                     )
         except Exception as e:
-            logger.error(f"[Senpai] Polling error: {e}")
+            logger.error(f"[Hinata] Polling error: {e}")
         time.sleep(1)
 
 # =============================================================================
@@ -756,7 +756,7 @@ def polling_loop() -> None:
 # =============================================================================
 
 def main() -> None:
-    logger.info("[Senpai] Memulai Senpai...")
+    logger.info("[Hinata] Memulai Hinata...")
 
     # Jalankan scan loop di thread terpisah
     scan_thread = threading.Thread(target=scan_loop, daemon=True)
@@ -764,9 +764,9 @@ def main() -> None:
 
     # Kirim pesan startup
     send_message(
-        "🤖 *Senpai siap digunakan.*\n"
+        "🤖 *Hinata siap digunakan, Senpai.*\n"
         "\n"
-        "Ketik `/sim on` untuk memulai simulasi, "
+        "Gunakan `/sim on` untuk memulai simulasi, "
         "atau `/sim` untuk melihat konfigurasi.",
         SIM_CHAT_ID,
     )
