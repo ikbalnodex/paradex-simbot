@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hinata — Simulator Pairs Trade BTC/ETH
+Hinata — Simulator Pairs Trade BTC/ETH.
 
 Hinata membaca data harga dari Redis secara mandiri,
 mendeteksi sinyal entry/exit secara mandiri, dan mensimulasikan
