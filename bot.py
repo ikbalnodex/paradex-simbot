@@ -308,46 +308,68 @@ def clear_pos_data_redis() -> bool:
 # =============================================================================
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
+def _post_telegram(chat_id: str, message: str) -> bool:
+    """
+    Kirim pesan ke Telegram dengan Markdown.
+    Kalau gagal 400 (parse error), otomatis retry sebagai plain text
+    supaya pesan tetap terkirim dan tidak hilang.
+    """
+    payload_md = {
+        "chat_id":                  chat_id,
+        "text":                     message,
+        "parse_mode":               "Markdown",
+        "disable_web_page_preview": True,
+    }
+    try:
+        resp = requests.post(TELEGRAM_API_URL, json=payload_md, timeout=30)
+        resp.raise_for_status()
+        return True
+    except requests.HTTPError as e:
+        if resp.status_code == 400:
+            # Markdown parse error — coba kirim ulang sebagai plain text
+            logger.warning(
+                f"Markdown parse error (400), retry as plain text. "
+                f"Pesan awal: {message[:120]!r}"
+            )
+            # Bersihkan karakter Markdown supaya plain text lebih bersih
+            import re as _re
+            plain = _re.sub(r"[*_`\[\]]", "", message)
+            try:
+                resp2 = requests.post(
+                    TELEGRAM_API_URL,
+                    json={
+                        "chat_id":                  chat_id,
+                        "text":                     plain,
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=30,
+                )
+                resp2.raise_for_status()
+                logger.info("Pesan terkirim sebagai plain text (fallback).")
+                return True
+            except requests.RequestException as e2:
+                logger.error(f"Plain text fallback juga gagal: {e2}")
+                return False
+        logger.error(f"Failed to send Telegram message: {e}")
+        return False
+    except requests.RequestException as e:
+        logger.error(f"Failed to send Telegram message: {e}")
+        return False
+
+
 def send_alert(message: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-    try:
-        resp = requests.post(
-            TELEGRAM_API_URL,
-            json={
-                "chat_id":                  TELEGRAM_CHAT_ID,
-                "text":                     message,
-                "parse_mode":               "Markdown",
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
+    ok = _post_telegram(TELEGRAM_CHAT_ID, message)
+    if ok:
         logger.info("Alert sent")
-        return True
-    except requests.RequestException as e:
-        logger.error(f"Failed to send alert: {e}")
-        return False
+    return ok
+
 
 def send_reply(message: str, chat_id: str) -> bool:
     if not TELEGRAM_BOT_TOKEN:
         return False
-    try:
-        resp = requests.post(
-            TELEGRAM_API_URL,
-            json={
-                "chat_id":                  chat_id,
-                "text":                     message,
-                "parse_mode":               "Markdown",
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        logger.error(f"Failed to send reply: {e}")
-        return False
+    return _post_telegram(chat_id, message)
 
 # =============================================================================
 # Command Polling
