@@ -42,7 +42,6 @@ from config import (
     logger,
 )
 
-
 # =============================================================================
 # Constants
 # =============================================================================
@@ -50,7 +49,6 @@ DEFAULT_LOOKBACK_HOURS  = 24
 HISTORY_BUFFER_MINUTES  = 30
 REDIS_REFRESH_MINUTES   = 1
 RATIO_WINDOW_DAYS       = 30   # window untuk hitung percentile ETH/BTC ratio
-
 
 # =============================================================================
 # Data Structures
@@ -60,24 +58,20 @@ class Mode(Enum):
     PEAK_WATCH = "PEAK_WATCH"
     TRACK      = "TRACK"
 
-
 class Strategy(Enum):
     S1 = "S1"  # Long BTC / Short ETH
     S2 = "S2"  # Long ETH / Short BTC
-
 
 class PricePoint(NamedTuple):
     timestamp: datetime
     btc:       Decimal
     eth:       Decimal
 
-
 class PriceData(NamedTuple):
     btc_price:      Decimal
     eth_price:      Decimal
     btc_updated_at: datetime
     eth_updated_at: datetime
-
 
 # =============================================================================
 # Global State
@@ -199,13 +193,11 @@ pos_data: dict = {
     "set_at":           None,   # ISO string
 }
 
-
 # =============================================================================
 # Redis — READ-ONLY for history, READ-WRITE for pos_data
 # =============================================================================
 REDIS_KEY     = "monk_bot:price_history"
 REDIS_KEY_POS = "monk_bot:pos_data"
-
 
 def _redis_request(method: str, path: str, body=None):
     if not UPSTASH_REDIS_URL or not UPSTASH_REDIS_TOKEN:
@@ -223,7 +215,6 @@ def _redis_request(method: str, path: str, body=None):
     except Exception as e:
         logger.warning(f"Redis request failed: {e}")
         return None
-
 
 def load_history() -> None:
     global price_history
@@ -249,7 +240,6 @@ def load_history() -> None:
         logger.warning(f"Failed to load history: {e}")
         price_history = []
 
-
 def refresh_history_from_redis(now: datetime) -> None:
     global last_redis_refresh
     interval = settings["redis_refresh_minutes"]
@@ -262,7 +252,6 @@ def refresh_history_from_redis(now: datetime) -> None:
     prune_history(now)
     last_redis_refresh = now
     logger.debug(f"Redis refreshed. {len(price_history)} points after prune")
-
 
 def save_pos_data() -> bool:
     """Simpan pos_data ke Redis supaya survive restart."""
@@ -279,7 +268,6 @@ def save_pos_data() -> bool:
     except Exception as e:
         logger.warning(f"save_pos_data failed: {e}")
         return False
-
 
 def load_pos_data() -> None:
     """Load pos_data dari Redis saat startup."""
@@ -304,7 +292,6 @@ def load_pos_data() -> None:
     except Exception as e:
         logger.warning(f"load_pos_data failed: {e}")
 
-
 def clear_pos_data_redis() -> bool:
     """Hapus pos_data dari Redis."""
     if not UPSTASH_REDIS_URL:
@@ -316,12 +303,10 @@ def clear_pos_data_redis() -> bool:
         logger.warning(f"clear_pos_data_redis failed: {e}")
         return False
 
-
 # =============================================================================
 # Telegram
 # =============================================================================
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
 
 def send_alert(message: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -344,7 +329,6 @@ def send_alert(message: str) -> bool:
         logger.error(f"Failed to send alert: {e}")
         return False
 
-
 def send_reply(message: str, chat_id: str) -> bool:
     if not TELEGRAM_BOT_TOKEN:
         return False
@@ -365,12 +349,10 @@ def send_reply(message: str, chat_id: str) -> bool:
         logger.error(f"Failed to send reply: {e}")
         return False
 
-
 # =============================================================================
 # Command Polling
 # =============================================================================
 LONG_POLL_TIMEOUT = 30
-
 
 def get_telegram_updates() -> list:
     global last_update_id
@@ -390,7 +372,6 @@ def get_telegram_updates() -> list:
     except requests.RequestException as e:
         logger.debug(f"Failed to get updates: {e}")
     return []
-
 
 def process_commands() -> None:
     for update in get_telegram_updates():
@@ -437,7 +418,6 @@ def process_commands() -> None:
         if command in dispatch:
             dispatch[command]()
 
-
 # =============================================================================
 # ─── MENTOR ANALYSIS ENGINE ──────────────────────────────────────────────────
 # =============================================================================
@@ -475,7 +455,6 @@ def analyze_gap_driver(
         explain = f"ETH {eth_contrib:.0f}% / BTC {btc_contrib:.0f}% — keduanya berkontribusi"
 
     return driver, emoji, explain
-
 
 def detect_market_regime() -> dict:
     """
@@ -575,7 +554,6 @@ def detect_market_regime() -> dict:
         "implications": impl,
     }
 
-
 def get_convergence_hint(strategy: Strategy, driver: str) -> str:
     """Prediksi cara konvergensi paling mungkin."""
     if strategy == Strategy.S1:
@@ -591,7 +569,6 @@ def get_convergence_hint(strategy: Strategy, driver: str) -> str:
             "Mixed":   "Keduanya berkontribusi → bisa revert dari ETH bounce atau BTC koreksi.",
         }
     return hints.get(driver, "")
-
 
 def calc_ratio_percentile() -> Tuple[
     Optional[float], Optional[float],
@@ -623,7 +600,6 @@ def calc_ratio_percentile() -> Tuple[
 
     return current, avg, high, low, percentile
 
-
 def get_ratio_conviction(strategy: Strategy, pct: Optional[int]) -> Tuple[str, str]:
     """Returns: (stars, description)"""
     if pct is None:
@@ -641,7 +617,6 @@ def get_ratio_conviction(strategy: Strategy, pct: Optional[int]) -> Tuple[str, s
         elif pct >= 60: return "⭐⭐⭐",     "ETH cukup mahal — setup moderat"
         elif pct >= 40: return "⭐⭐",       "ETH di area tengah — gap bisa melebar lebih lanjut"
         else:           return "⭐",         "ETH *murah* vs BTC — S1 berisiko"
-
 
 def _calc_ratio_extended_stats(
     curr_r: float,
@@ -672,7 +647,6 @@ def _calc_ratio_extended_stats(
         "z_score":       z_score,
         "revert_to_avg": revert_to_avg,
     }
-
 
 def _build_conviction_detail(
     strategy: Strategy,
@@ -779,7 +753,6 @@ def _build_conviction_detail(
             f"{entry_note}"
         )
 
-
 def calc_sizing(
     btc_price: Decimal,
     eth_price: Decimal,
@@ -798,7 +771,6 @@ def calc_sizing(
     eth_qty   = eth_alloc / float(eth_price)
     btc_qty   = btc_alloc / float(btc_price)
     return eth_alloc, btc_alloc, eth_qty, btc_qty
-
 
 def calc_convergence_scenarios(
     strategy: Strategy,
@@ -829,7 +801,6 @@ def calc_convergence_scenarios(
         return eth_a, btc_b
     except Exception:
         return None, None
-
 
 def calc_net_pnl(
     strategy:    Strategy,
@@ -867,7 +838,6 @@ def calc_net_pnl(
     except Exception:
         return None, None, None
 
-
 def get_pairs_health(
     strategy:    Strategy,
     current_gap: float,
@@ -891,7 +861,6 @@ def get_pairs_health(
     elif progress >= 0:  return "⚪", f"Belum banyak bergerak. Progress {progress:.0f}%"
     else:                return "🔴", f"Berlawanan arah. Progress {progress:.0f}%"
 
-
 # =============================================================================
 # ─── POSITION HEALTH ENGINE ──────────────────────────────────────────────────
 # =============================================================================
@@ -904,7 +873,7 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
     if not settings["sim_enabled"]:
         return ""
     if sim_trade["active"]:
-        return "_⚠️ Sim: posisi sudah aktif, skip open~_\n"
+        return "_⚠️ Sim: posisi sudah aktif, skip open._\n"
 
     # ── Regime Alignment Filter ──────────────────────────────────────────────
     # Logika: gap arah harus selaras dengan arah market
@@ -931,7 +900,7 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
             skip_reason = (
                 f"Gap+ tapi market *DUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
                 f"BTC turun lebih dalam, ETH hanya lebih tahan — Short ETH = lawan trend\n"
-                f"_S1 valid hanya saat market pump, anata~_"
+                f"_S1 hanya valid saat market sedang pump._"
             )
         elif strategy == Strategy.S2 and market_pump:
             # Gap- tapi market pump → BTC naik lebih kencang, ETH tertinggal
@@ -939,7 +908,7 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
             skip_reason = (
                 f"Gap- tapi market *PUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
                 f"BTC naik lebih kencang, ETH hanya tertinggal — Short BTC = lawan trend\n"
-                f"_S2 valid hanya saat market dump, anata~_"
+                f"_S2 hanya valid saat market sedang dump._"
             )
 
         if skip_reason:
@@ -1032,9 +1001,8 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
         f"│ Leverage: {lev:.0f}x | Ratio: {er:.0f}/{br:.0f}\n"
         f"│ Fee open: ${fee_open:.3f}\n"
         f"└─────────────────────\n"
-        f"_Ketik `/health` untuk monitor PnL live~_\n"
+        f"_Ketik `/health` untuk monitor PnL secara live._\n"
     )
-
 
 def sim_close_position(btc_price: float, eth_price: float, reason: str = "EXIT") -> str:
     """
@@ -1118,9 +1086,8 @@ def sim_close_position(btc_price: float, eth_price: float, reason: str = "EXIT")
         f"│ Modal:      ${total_margin:.2f} | Durasi: {dur_str}\n"
         f"└─────────────────────\n"
         f"Total trade: {len(sim_trade['history'])} | "
-        f"Ketik `/simstats` untuk rekap semua~\n"
+        f"Ketik `/simstats` untuk rekap semua\n"
     )
-
 
 def calc_gap_velocity() -> dict:
     """
@@ -1188,7 +1155,6 @@ def calc_gap_velocity() -> dict:
     except Exception as e:
         logger.warning(f"calc_gap_velocity error: {e}")
         return {}
-
 
 def calc_position_pnl() -> dict:
     """
@@ -1321,7 +1287,6 @@ def calc_position_pnl() -> dict:
         logger.warning(f"calc_position_pnl error: {e}")
         return {}
 
-
 def build_position_health_message(h: dict) -> str:
     strat   = pos_data.get("strategy") or "?"
     eth_p   = float(scan_stats["last_eth_price"]) if scan_stats.get("last_eth_price") else 0
@@ -1380,7 +1345,7 @@ def build_position_health_message(h: dict) -> str:
             + f"└─────────────────────\n"
         )
     else:
-        funding_block = "\n_💸 Funding: belum diset — gunakan `/setfunding`~_\n"
+        funding_block = "\n_💸 Funding: belum diset — gunakan `/setfunding`._\n"
 
     vel  = calc_gap_velocity()
     vel_block = ""
@@ -1480,9 +1445,8 @@ def build_position_health_message(h: dict) -> str:
         f"│ `{lb_bar}` sebelum likuidasi\n"
         f"└─────────────────────\n"
         f"{danger_note}\n"
-        f"_💡 NET = yang penting. Mentor: ETH -68% tapi net +$239~_"
+        f"_💡 NET P&L adalah yang terpenting. Contoh: ETH -68% tapi net +$239._"
     )
-
 
 # =============================================================================
 # ─── ENTRY READINESS ENGINE ──────────────────────────────────────────────────
@@ -1533,7 +1497,7 @@ def build_entry_readiness(
         if not ratio_ok:
             warnings.append("ETH/BTC ratio belum ideal — gap bisa melebar lebih jauh sebelum revert")
     else:
-        checks.append((None, "Ratio N/A", "Butuh lebih banyak history~"))
+        checks.append((None, "Ratio N/A", "Butuh lebih banyak history"))
 
     if btc_r is not None and eth_r is not None:
         driver, _, driver_ex = analyze_gap_driver(float(btc_r), float(eth_r), gap_f)
@@ -1545,7 +1509,7 @@ def build_entry_readiness(
             else:
                 warnings.append("BTC-led di S2: BTC kuat, ETH belum tentu bounce cepat")
     else:
-        checks.append((None, "Driver belum tersedia", "Tunggu data scan~"))
+        checks.append((None, "Driver belum tersedia", "Tunggu data scan"))
 
     dist_invalid = (it - gap_f) if strategy == Strategy.S1 else (gap_f - (-it))
     if dist_invalid >= 1.5:
@@ -1572,7 +1536,7 @@ def build_entry_readiness(
         if abs(z) > 3.0:
             warnings.append(f"Z-score {z:+.2f}σ sangat ekstrem — bisa ada alasan fundamental, bukan sekadar divergence")
     else:
-        checks.append((None, "Z-score N/A", "Data kurang~"))
+        checks.append((None, "Z-score N/A", "Data kurang"))
 
     true_count  = sum(1 for c in checks if c[0] is True)
     false_count = sum(1 for c in checks if c[0] is False)
@@ -1580,13 +1544,13 @@ def build_entry_readiness(
     score_pct   = true_count / total_valid * 100 if total_valid > 0 else 0
 
     if false_count == 0 and true_count >= 4:
-        v_e, verdict, v_d = "🟢", "READY TO ENTRY", "Semua faktor oke — kondisi optimal~"
+        v_e, verdict, v_d = "🟢", "READY TO ENTRY", "Semua faktor oke — kondisi optimal"
     elif not correct_side or false_count >= 2:
-        v_e, verdict, v_d = "🔴", "JANGAN ENTRY DULU", "Terlalu banyak faktor tidak terpenuhi~"
+        v_e, verdict, v_d = "🔴", "JANGAN ENTRY DULU", "Terlalu banyak faktor tidak terpenuhi"
     elif false_count <= 1 and true_count >= 3:
-        v_e, verdict, v_d = "🟡", "BISA ENTRY, TAPI HATI-HATI", "1 faktor lemah — pertimbangkan sizing lebih kecil~"
+        v_e, verdict, v_d = "🟡", "BISA ENTRY, TAPI HATI-HATI", "1 faktor lemah — pertimbangkan sizing lebih kecil"
     else:
-        v_e, verdict, v_d = "🟠", "TUNGGU KONFIRMASI", "Beberapa faktor masih meragukan~"
+        v_e, verdict, v_d = "🟠", "TUNGGU KONFIRMASI", "Beberapa faktor masih meragukan"
 
     checklist = ""
     for ok, label, detail in checks:
@@ -1608,7 +1572,6 @@ def build_entry_readiness(
         f"{warn_block}"
     )
 
-
 # =============================================================================
 # Formatting
 # =============================================================================
@@ -1618,10 +1581,8 @@ def format_value(value) -> str:
         return "+0.0"
     return f"+{fv:.1f}" if fv >= 0 else f"{fv:.1f}"
 
-
 def get_lookback_label() -> str:
     return f"{settings['lookback_hours']}h"
-
 
 # =============================================================================
 # Target Price Helpers
@@ -1638,12 +1599,10 @@ def calc_eth_price_at_gap(gap_target: float) -> Tuple[Optional[float], Optional[
     except Exception:
         return None, None
 
-
 def calc_tp_target_price(strategy: Strategy) -> Tuple[Optional[float], Optional[float]]:
     et         = settings["exit_threshold"]
     gap_target = et if strategy == Strategy.S1 else -et
     return calc_eth_price_at_gap(gap_target)
-
 
 # =============================================================================
 # ─── MESSAGE BUILDERS ────────────────────────────────────────────────────────
@@ -1659,16 +1618,15 @@ def build_peak_watch_message(strategy: Strategy, gap: Decimal) -> str:
         reason    = f"ETH dumping lebih dalam dari BTC ({lb})"
     return (
         f"………\n"
-        f"Anata~ Hinata melihat sesuatu yang menarik perhatianku~ (◕‿◕)\n"
+        f"Terdeteksi sinyal yang menarik.\n"
         f"\n"
         f"_{reason}_\n"
         f"Rencana: *{direction}*\n"
         f"Gap sekarang: *{format_value(gap)}%*\n"
         f"\n"
-        f"Tapi Hinata tidak akan terburu-buru, anata~\n"
-        f"Kita pantau puncaknya dulu sebelum masuk ya~ ⚡"
+        f"Tapi Bot tidak akan terburu-buru.\n"
+        f"Kita pantau puncaknya dulu sebelum masuk ya  ⚡"
     )
-
 
 def build_entry_message(
     strategy:  Strategy,
@@ -1782,17 +1740,17 @@ def build_entry_message(
                 f"└─────────────────────\n"
             )
     else:
-        sizing_section = "\n_💡 `/capital <modal>` untuk sizing guide~_\n"
+        sizing_section = "\n_💡 `/capital <modal>` untuk sizing guide._\n"
 
     peak_line     = f"│ Peak:     {peak:+.2f}%\n" if not is_direct and peak else ""
     direct_tag    = " _(Peak OFF)_\n" if is_direct else "\n"
     reversal_note = (
-        f"_Gap berbalik {settings['peak_reversal']}% dari puncak → entry terkonfirmasi~_\n"
+        f"_Gap berbalik {settings['peak_reversal']}% dari puncak → entry terkonfirmasi._\n"
         if not is_direct else ""
     )
 
     return (
-        f"Anata~! Ini dia yang kita tunggu! Hinata sudah siap dari tadi~ ⚡\n"
+        f"Sinyal yang ditunggu sudah muncul! ⚡\n"
         f"🚨 *ENTRY SIGNAL: {strategy.value}*{direct_tag}"
         f"📈 *{direction}*\n"
         f"\n"
@@ -1836,9 +1794,8 @@ def build_entry_message(
         f"{sizing_section}"
         f"{reversal_note}"
         f"\n"
-        f"Hinata percaya anata bisa buat keputusan terbaik~ Gambatte ne! ⚡"
+        f"Keputusan ada di tangan Anda. Semangat! ⚡"
     )
-
 
 def build_exit_message(
     btc_ret:      Decimal,
@@ -1852,7 +1809,7 @@ def build_exit_message(
     net_section   = _build_pnl_section(leg_e, leg_b, net)
     conf_line     = f"_{confirm_note}_\n" if confirm_note else ""
     return (
-        f"Yokatta ne, anata~! Ufufu~ (◕▿◕)\n"
+        f"Sinyal exit terdeteksi.\n"
         f"✅ *EXIT — Gap Konvergen!*\n"
         f"{conf_line}"
         f"\n"
@@ -1863,9 +1820,8 @@ def build_exit_message(
         f"│ Gap:  *{format_value(gap)}%*\n"
         f"└─────────────────────\n"
         f"{net_section}"
-        f"Saatnya close posisi, anata~ Hinata terus pantau dari sini. ⚡🔍"
+        f"Saatnya pertimbangkan penutupan posisi. Bot terus memantau. ⚡🔍"
     )
-
 
 def build_tp_message(
     btc_ret:   Decimal,
@@ -1881,7 +1837,7 @@ def build_tp_message(
     leg_e, leg_b, net = calc_net_pnl(active_strategy, gap_f) if active_strategy else (None, None, None)
     net_section = _build_pnl_section(leg_e, leg_b, net, emoji="🎉")
     return (
-        f"Anata~! TP kena! Hinata sangat senang untukmu~! ✨\n"
+        f"Target profit tercapai! ✨\n"
         f"🎯 *TAKE PROFIT*\n"
         f"\n"
         f"*{lb} Change:*\n"
@@ -1894,9 +1850,8 @@ def build_tp_message(
         f"│ ETH:    {eth_str}\n"
         f"└─────────────────────\n"
         f"{net_section}"
-        f"Misi berhasil, anata~ Hinata bangga! ⚡"
+        f"Posisi ditutup dengan hasil positif. ⚡"
     )
-
 
 def build_trailing_sl_message(
     btc_ret:   Decimal,
@@ -1917,7 +1872,7 @@ def build_trailing_sl_message(
         f"………\n"
         f"⛔ *TRAILING STOP LOSS*\n"
         f"\n"
-        f"Anata, TSL kena. Profit sudah aman ya~ (◕ω◕)\n"
+        f"Trailing Stop Loss terkena. Profit telah diamankan.\n"
         f"\n"
         f"*{lb} Change:*\n"
         f"┌─────────────────────\n"
@@ -1930,9 +1885,8 @@ def build_trailing_sl_message(
         f"│ Terkunci: ~{profit_locked:.2f}%\n"
         f"└─────────────────────\n"
         f"{net_section}"
-        f"Istirahat sebentar ya, anata~ Hinata scan lagi dari awal~ ⚡ (◕‿◕)"
+        f"Bot kembali ke mode SCAN. ⚡"
     )
-
 
 def build_invalidation_message(
     strategy: Strategy,
@@ -1948,7 +1902,7 @@ def build_invalidation_message(
         f"………\n"
         f"⚠️ *INVALIDATION: {strategy.value}*\n"
         f"\n"
-        f"Anata, gap malah melebar. Lebih baik cut dulu ya~ (◕ω◕)\n"
+        f"Gap melebar melewati batas. Disarankan untuk cut posisi.\n"
         f"\n"
         f"*{lb} Change:*\n"
         f"┌─────────────────────\n"
@@ -1957,21 +1911,19 @@ def build_invalidation_message(
         f"│ Gap:  {format_value(gap)}%\n"
         f"└─────────────────────\n"
         f"{net_section}"
-        f"Hinata mulai scan ulang dari awal~ ⚡ (◕‿◕)"
+        f"Bot memulai scan ulang dari awal. ⚡"
     )
-
 
 def build_peak_cancelled_message(strategy: Strategy, gap: Decimal) -> str:
     return (
         f"………\n"
         f"❌ *Peak Watch Dibatalkan: {strategy.value}*\n"
         f"\n"
-        f"Gap mundur sebelum konfirmasi, anata~ (◕ω◕)\n"
+        f"Gap mundur sebelum terkonfirmasi.\n"
         f"Gap sekarang: *{format_value(gap)}%*\n"
         f"\n"
-        f"Hinata tetap pantau terus dari dekat ya~ (◕‿◕)"
+        f"Bot tetap memantau secara aktif."
     )
-
 
 def _build_pnl_section(
     leg_e: Optional[float],
@@ -2026,7 +1978,6 @@ def _build_pnl_section(
             )
     else:
         return f"\n_Net gap movement: {net:+.2f}%_\n\n"
-
 
 def build_heartbeat_message() -> str:
     lb          = get_lookback_label()
@@ -2100,9 +2051,9 @@ def build_heartbeat_message() -> str:
             f"└─────────────────────\n"
         )
 
-    last_r = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum~"
+    last_r = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
     return (
-        f"💓 *Hinata masih menjaga, anata~ Ufufu... (◕‿◕)*\n"
+        f"💓 *Bot aktif dan memantau pasar.*\n"
         f"\n"
         f"Mode: *{current_mode.value}* | Peak: {peak_str}\n"
         f"Strategi: {active_strategy.value if active_strategy else '—'}\n"
@@ -2123,9 +2074,8 @@ def build_heartbeat_message() -> str:
         f"{track_section}\n"
         f"Data: {data_status} | Redis: {last_r} 🔒\n"
         f"\n"
-        f"_Hinata lapor lagi {settings['heartbeat_minutes']} menit lagi ya, anata~ ⚡_"
+        f"_Laporan berikutnya dalam {settings['heartbeat_minutes']} menit. ⚡_"
     )
-
 
 # =============================================================================
 # Heartbeat
@@ -2137,12 +2087,10 @@ def send_heartbeat() -> bool:
     scan_stats["signals_sent"] = 0
     return success
 
-
 def should_send_heartbeat(now: datetime) -> bool:
     if settings["heartbeat_minutes"] == 0 or last_heartbeat_time is None:
         return False
     return (now - last_heartbeat_time).total_seconds() / 60 >= settings["heartbeat_minutes"]
-
 
 # =============================================================================
 # API & Price History
@@ -2161,7 +2109,6 @@ def parse_iso_timestamp(ts_str: str):
     except (ValueError, AttributeError) as e:
         logger.error(f"Failed to parse timestamp '{ts_str}': {e}")
         return None
-
 
 def fetch_prices() -> Optional[PriceData]:
     url = f"{API_BASE_URL}{API_ENDPOINT}"
@@ -2195,12 +2142,10 @@ def fetch_prices() -> Optional[PriceData]:
 
     return PriceData(btc_price, eth_price, btc_upd, eth_upd)
 
-
 def prune_history(now: datetime) -> None:
     global price_history
     cutoff       = now - timedelta(hours=settings["lookback_hours"], minutes=HISTORY_BUFFER_MINUTES)
     price_history = [p for p in price_history if p.timestamp >= cutoff]
-
 
 def get_lookback_price(now: datetime) -> Optional[PricePoint]:
     target    = now - timedelta(hours=settings["lookback_hours"])
@@ -2211,17 +2156,14 @@ def get_lookback_price(now: datetime) -> Optional[PricePoint]:
             diff, best = d, point
     return best
 
-
 def compute_returns(btc_now, eth_now, btc_prev, eth_prev):
     btc_chg = (btc_now - btc_prev) / btc_prev * Decimal("100")
     eth_chg = (eth_now - eth_prev) / eth_prev * Decimal("100")
     return btc_chg, eth_chg, eth_chg - btc_chg
 
-
 def is_data_fresh(now, btc_upd, eth_upd) -> bool:
     threshold = timedelta(minutes=FRESHNESS_THRESHOLD_MINUTES)
     return (now - btc_upd) <= threshold and (now - eth_upd) <= threshold
-
 
 # =============================================================================
 # State Reset
@@ -2245,7 +2187,6 @@ def reset_to_scan() -> None:
     entry_eth_ret     = None
     entry_driver      = None
     exit_confirm_count = 0
-
 
 # =============================================================================
 # TP + TSL Check
@@ -2301,7 +2242,6 @@ def check_sltp(
             return True
 
     return False
-
 
 # =============================================================================
 # State Machine
@@ -2471,8 +2411,8 @@ def evaluate_and_transition(
                         send_alert(
                             f"⏳ *Pre-exit: Gap menyentuh TP zone*\n"
                             f"Gap: {gap_float:+.2f}% | TP level: ±{exit_thresh}%\n"
-                            f"Menunggu konfirmasi {remaining} scan lagi{pnl_wait}~\n"
-                            f"_Sabar sebentar ya, anata~ (◕ω◕)_"
+                            f"Menunggu konfirmasi {remaining} scan lagi{pnl_wait}\n"
+                            f"_Menunggu konfirmasi exit..._"
                         )
                         logger.info(f"PRE-EXIT {active_strategy.value}. Gap: {gap_float:.2f}% "
                                     f"| Need {remaining} more scans{pnl_wait}")
@@ -2501,7 +2441,6 @@ def evaluate_and_transition(
 
         logger.debug(f"TRACK {active_strategy.value}: Gap {gap_float:.2f}%")
 
-
 # =============================================================================
 # ─── COMMAND HANDLERS ────────────────────────────────────────────────────────
 # =============================================================================
@@ -2512,7 +2451,7 @@ def handle_settings_command(reply_chat: str) -> None:
     rr      = settings["redis_refresh_minutes"]
     rr_str  = f"{rr} menit" if rr > 0 else "Off"
     peak_s  = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
-    cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "Belum diset~"
+    cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "Belum diset"
     ec_scans = int(settings["exit_confirm_scans"])
     ec_buf   = float(settings["exit_confirm_buffer"])
     ec_pnl   = float(settings["exit_pnl_gate"])
@@ -2525,7 +2464,7 @@ def handle_settings_command(reply_chat: str) -> None:
         else "OFF (langsung exit)"
     )
     send_reply(
-        f"⚙️ *Settings — Hinata jaga semuanya, anata~ Ufufu...*\n"
+        f"⚙️ *Konfigurasi Bot Saat Ini*\n"
         f"\n"
         f"📊 Scan Interval:  {settings['scan_interval']}s\n"
         f"🕐 Lookback:       {settings['lookback_hours']}h\n"
@@ -2541,10 +2480,9 @@ def handle_settings_command(reply_chat: str) -> None:
         f"💰 Modal:          {cap_str}\n"
         f"📈 Ratio Window:   {settings['ratio_window_days']}d\n"
         f"\n"
-        f"_Lihat `/help` untuk semua command ya, anata~ (◕‿◕)_",
+        f"_Ketik `/help` untuk daftar perintah lengkap._",
         reply_chat,
     )
-
 
 def handle_status_command(reply_chat: str) -> None:
     hours_data  = len(price_history) * settings["scan_interval"] / 3600
@@ -2555,7 +2493,7 @@ def handle_status_command(reply_chat: str) -> None:
         else f"⏳ {hours_data:.1f}h / {lookback}h"
     )
     peak_s      = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
-    last_r      = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum~"
+    last_r      = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
 
     scan_section = ""
     if current_mode == Mode.SCAN:
@@ -2658,7 +2596,7 @@ def handle_status_command(reply_chat: str) -> None:
         )
 
     send_reply(
-        f"📊 *Status Hinata* Ufufu... (◕‿◕)\n"
+        f"📊 *Status Bot*\n"
         f"\n"
         f"Mode: *{current_mode.value}* | Peak: {peak_s}\n"
         f"Strategi: {active_strategy.value if active_strategy else '—'}\n"
@@ -2669,13 +2607,12 @@ def handle_status_command(reply_chat: str) -> None:
         reply_chat,
     )
 
-
 def handle_pnl_command(reply_chat: str) -> None:
     """Net combined P&L posisi aktif."""
     if current_mode != Mode.TRACK or active_strategy is None or entry_gap_value is None:
         send_reply(
-            "Belum ada posisi aktif sekarang, anata~ (◕ω◕)\n"
-            "Hinata masih mode SCAN~",
+            "Belum ada posisi aktif sekarang.\n"
+            "Bot masih mode SCAN",
             reply_chat,
         )
         return
@@ -2715,9 +2652,9 @@ def handle_pnl_command(reply_chat: str) -> None:
     elif net is not None:
         pnl_body = f"│ Net gap movement: *{net:+.2f}%*\n"
         if capital <= 0:
-            pnl_body += "│ _/capital <modal> untuk P&L dalam $~_\n"
+            pnl_body += "│ _/capital <modal> untuk P&L dalam $._\n"
     else:
-        pnl_body = "│ Data tidak cukup~\n"
+        pnl_body = "│ Data tidak cukup\n"
 
     et   = settings["exit_threshold"]
     sl   = settings["sl_pct"]
@@ -2751,11 +2688,10 @@ def handle_pnl_command(reply_chat: str) -> None:
         f"\n"
         f"*Health:* {health_e} {health_d}\n"
         f"\n"
-        f"_💡 Pairs trade: nilai dari NET, bukan per leg ya, anata~_\n"
-        f"_Seperti mentor: leg ETH -68% tapi net +$239~ (◕‿◕)_",
+        f"_💡 Pairs trade: nilai dari NET, bukan per leg ._\n"
+        f"_Seperti mentor: leg ETH -68% tapi net +$239._",
         reply_chat,
     )
-
 
 def handle_ratio_command(reply_chat: str) -> None:
     """ETH/BTC ratio percentile monitor — detail conviction + entry readiness."""
@@ -2763,8 +2699,8 @@ def handle_ratio_command(reply_chat: str) -> None:
 
     if curr_r is None:
         send_reply(
-            f"Hinata belum punya cukup data, anata~ (◕ω◕)\n"
-            f"Sekarang: {len(price_history)} points. Butuh minimal 10~",
+            f"Bot belum punya cukup data.\n"
+            f"Sekarang: {len(price_history)} points. Butuh minimal 10",
             reply_chat,
         )
         return
@@ -2815,10 +2751,9 @@ def handle_ratio_command(reply_chat: str) -> None:
         f"══════════════════════\n"
         f"{ready_s2}\n"
         f"\n"
-        f"_Dari {len(price_history)} price points ya, anata~_",
+        f"_Berdasarkan {len(price_history)} data point terakhir._",
         reply_chat,
     )
-
 
 def handle_analysis_command(reply_chat: str) -> None:
     """Full market analysis on demand."""
@@ -2829,7 +2764,7 @@ def handle_analysis_command(reply_chat: str) -> None:
     eth_p   = scan_stats.get("last_eth_price")
 
     if gap_now is None:
-        send_reply("Hinata belum dapat data harga, anata~ Tunggu scan pertama ya~ (◕ω◕)", reply_chat)
+        send_reply("Data harga belum tersedia. Menunggu scan pertama...", reply_chat)
         return
 
     lb     = get_lookback_label()
@@ -2878,7 +2813,7 @@ def handle_analysis_command(reply_chat: str) -> None:
     else:
         cand_str  = "💤 Belum ada kandidat entry"
         stars, cv = "—", "—"
-        hint      = f"Tunggu gap ±{et}%~"
+        hint      = f"Tunggu gap ±{et}%"
 
     sizing_str = ""
     if settings["capital"] > 0 and btc_p and eth_p:
@@ -2906,7 +2841,7 @@ def handle_analysis_command(reply_chat: str) -> None:
 
     send_reply(
         f"🧠 *Full Market Analysis*\n"
-        f"_Hinata analisis semuanya untuk anata~ Ufufu... (◕‿◕)_\n"
+        f"_Analisis lengkap dari semua indikator._\n"
         f"\n"
         f"{reg_block}\n"
         f"*📊 Gap ({lb}):*\n"
@@ -2930,10 +2865,9 @@ def handle_analysis_command(reply_chat: str) -> None:
         f"{pos_str}\n"
         f"Mode: *{current_mode.value}* | Peak: {'✅ ON' if settings['peak_enabled'] else '❌ OFF'}\n"
         f"\n"
-        f"_`/ratio` detail ratio | `/pnl` P&L posisi aktif~_",
+        f"_Gunakan `/ratio` untuk detail ratio, `/pnl` untuk P&L posisi aktif._",
         reply_chat,
     )
-
 
 def handle_capital_command(args: list, reply_chat: str) -> None:
     if not args:
@@ -2958,8 +2892,8 @@ def handle_capital_command(args: list, reply_chat: str) -> None:
             )
         else:
             send_reply(
-                "💰 *Modal belum diset, anata~*\n\n"
-                "Set modal untuk sizing guide & P&L dalam dollar~\n"
+                "💰 *Modal belum dikonfigurasi.*\n\n"
+                "Set modal untuk sizing guide & P&L dalam dollar\n"
                 "Usage: `/capital 1000`",
                 reply_chat,
             )
@@ -2968,21 +2902,20 @@ def handle_capital_command(args: list, reply_chat: str) -> None:
     try:
         val = float(args[0])
         if val < 0 or val > 10_000_000:
-            send_reply("Harus antara $0 sampai $10,000,000 ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus antara $0 sampai $10,000,000 .", reply_chat)
             return
         settings["capital"] = val
         if val == 0:
-            send_reply("Modal di-reset. Sizing & dollar P&L dimatikan~ (◕‿◕)", reply_chat)
+            send_reply("Modal di-reset. Sizing & dollar P&L dinonaktifkan.", reply_chat)
         else:
             send_reply(
-                f"💰 Modal *${val:,.0f}* sudah Hinata simpan~\n"
-                f"Sizing guide & P&L aktif~ Ufufu... (◕‿◕)",
+                f"💰 Modal *${val:,.0f}* sudah Bot simpan\n"
+                f"Sizing guide & P&L aktif  ",
                 reply_chat,
             )
         logger.info(f"Capital set to {val}")
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Angkanya tidak valid .", reply_chat)
 
 def handle_sizeratio_command(args: list, reply_chat: str) -> None:
     """
@@ -3023,7 +2956,7 @@ def handle_sizeratio_command(args: list, reply_chat: str) -> None:
         val = float(args[0])
         if not (10.0 <= val <= 90.0):
             send_reply(
-                "Range harus 10–90% ya, anata~ (◕ω◕)\n"
+                "Range harus 10–90% .\n"
                 "Contoh: `/sizeratio 60` untuk ETH 60% / BTC 40%",
                 reply_chat,
             )
@@ -3046,17 +2979,16 @@ def handle_sizeratio_command(args: list, reply_chat: str) -> None:
 
         logger.info(f"Size ratio set: ETH {val:.0f}% / BTC {btc_pct:.0f}%")
         send_reply(
-            f"✅ *Sizing ratio diupdate, anata~* (◕‿◕)\n"
+            f"✅ *Sizing ratio diupdate.*\n"
             f"\n"
             f"ETH leg: *{val:.0f}%* | BTC leg: *{btc_pct:.0f}%*\n"
             f"_{tag}_\n"
             f"{preview}\n"
-            f"Berlaku di semua sinyal entry berikutnya~",
+            f"Berlaku di semua sinyal entry berikutnya",
             reply_chat,
         )
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ Contoh: `/sizeratio 60`~", reply_chat)
-
+        send_reply("Angkanya tidak valid . Contoh: `/sizeratio 60`", reply_chat)
 
 def handle_peak_command(args: list, reply_chat: str) -> None:
     peak_s = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
@@ -3075,23 +3007,22 @@ def handle_peak_command(args: list, reply_chat: str) -> None:
     first = args[0].lower()
     if first == "on":
         settings["peak_enabled"] = True
-        send_reply("✅ *Peak Watch ON*, anata~ (◕‿◕)", reply_chat)
+        send_reply("✅ *Peak Watch aktif.*", reply_chat)
         return
     if first == "off":
         _cancel_peak_watch_if_active(reply_chat)
         settings["peak_enabled"] = False
-        send_reply("❌ *Peak Watch OFF* ya, anata~ Langsung entry saat threshold~ (◕ω◕)", reply_chat)
+        send_reply("❌ *Peak Watch dinonaktifkan.* Bot akan langsung entry saat threshold tercapai.", reply_chat)
         return
     try:
         val = float(first)
         if val <= 0 or val > 3.0:
-            send_reply("Harus antara 0–3.0 ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus antara 0–3.0 .", reply_chat)
             return
         settings["peak_reversal"] = val
-        send_reply(f"Reversal *{val}%* dari puncak, anata~ (◕‿◕)", reply_chat)
+        send_reply(f"Reversal *{val}%* dari puncak.", reply_chat)
     except ValueError:
-        send_reply("Gunakan `on`, `off`, atau angka reversal ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Gunakan `on`, `off`, atau angka reversal .", reply_chat)
 
 def _cancel_peak_watch_if_active(reply_chat=None) -> None:
     global current_mode, peak_gap, peak_strategy
@@ -3099,13 +3030,12 @@ def _cancel_peak_watch_if_active(reply_chat=None) -> None:
         if reply_chat:
             send_reply(
                 f"⚠️ Peak Watch *{peak_strategy.value}* dibatalkan.\n"
-                "Kembali ke SCAN ya, anata~ (◕ω◕)",
+                "Kembali ke mode SCAN.",
                 reply_chat,
             )
         current_mode  = Mode.SCAN
         peak_gap      = None
         peak_strategy = None
-
 
 def handle_sltp_command(args: list, reply_chat: str) -> None:
     if not args:
@@ -3133,43 +3063,41 @@ def handle_sltp_command(args: list, reply_chat: str) -> None:
         return
 
     if len(args) < 2:
-        send_reply("Usage: `/sltp sl <nilai>` ya, anata~ (◕ω◕)", reply_chat)
+        send_reply("Usage: `/sltp sl <nilai>` .", reply_chat)
         return
 
     try:
         key, val = args[0].lower(), float(args[1])
         if val <= 0 or val > 10:
-            send_reply("Harus antara 0–10 ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus antara 0–10 .", reply_chat)
             return
         if key == "sl":
             settings["sl_pct"] = val
-            send_reply(f"Trailing SL distance *{val}%*, anata~ (◕‿◕)", reply_chat)
+            send_reply(f"Trailing SL distance *{val}%*.", reply_chat)
         elif key == "tp":
             send_reply(
-                f"TP mengikuti exit threshold ±{settings['exit_threshold']}%~\n"
-                f"Gunakan `/threshold exit <nilai>` ya, anata~ (◕‿◕)",
+                f"TP mengikuti exit threshold ±{settings['exit_threshold']}%\n"
+                f"Gunakan `/threshold exit <nilai>` .",
                 reply_chat,
             )
         else:
-            send_reply("Gunakan `sl` ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Gunakan `sl` .", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Angkanya tidak valid .", reply_chat)
 
 def handle_interval_command(args: list, reply_chat: str) -> None:
     if not args:
-        send_reply(f"Interval: *{settings['scan_interval']}s*~\nUsage: `/interval <60-3600>`", reply_chat)
+        send_reply(f"Interval: *{settings['scan_interval']}s*\nUsage: `/interval <60-3600>`", reply_chat)
         return
     try:
         val = int(args[0])
         if val < 60 or val > 3600:
-            send_reply("Harus 60–3600 detik ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus 60–3600 detik .", reply_chat)
             return
         settings["scan_interval"] = val
-        send_reply(f"Scan setiap *{val}s*, anata~ (◕‿◕)", reply_chat)
+        send_reply(f"Scan setiap *{val}s*.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Angkanya tidak valid .", reply_chat)
 
 def handle_threshold_command(args: list, reply_chat: str) -> None:
     if len(args) < 2:
@@ -3181,76 +3109,73 @@ def handle_threshold_command(args: list, reply_chat: str) -> None:
     try:
         t_type, val = args[0].lower(), float(args[1])
         if val <= 0 or val > 20:
-            send_reply("Harus antara 0–20 ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus antara 0–20 .", reply_chat)
             return
         if t_type == "entry":
             settings["entry_threshold"] = val
-            send_reply(f"Entry threshold *±{val}%*, anata~ (◕‿◕)", reply_chat)
+            send_reply(f"Entry threshold *±{val}%*.", reply_chat)
         elif t_type == "exit":
             settings["exit_threshold"] = val
-            send_reply(f"Exit/TP threshold *±{val}%*, anata~ (◕‿◕)", reply_chat)
+            send_reply(f"Exit/TP threshold *±{val}%*.", reply_chat)
         elif t_type in ("invalid", "invalidation"):
             settings["invalidation_threshold"] = val
-            send_reply(f"Invalidation *±{val}%*, anata~ (◕‿◕)", reply_chat)
+            send_reply(f"Invalidation *±{val}%*.", reply_chat)
         else:
-            send_reply("Gunakan `entry`, `exit`, atau `invalid` ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Gunakan `entry`, `exit`, atau `invalid` .", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Angkanya tidak valid .", reply_chat)
 
 def handle_lookback_command(args: list, reply_chat: str) -> None:
     if not args:
-        send_reply(f"Lookback: *{settings['lookback_hours']}h*~\nUsage: `/lookback <1-24>`", reply_chat)
+        send_reply(f"Lookback: *{settings['lookback_hours']}h*\nUsage: `/lookback <1-24>`", reply_chat)
         return
     try:
         val = int(args[0])
         if val < 1 or val > 24:
-            send_reply("Harus 1–24 jam ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus 1–24 jam .", reply_chat)
             return
         old = settings["lookback_hours"]
         settings["lookback_hours"] = val
         prune_history(datetime.now(timezone.utc))
-        send_reply(f"Lookback *{old}h* → *{val}h*, anata~ History di-prune. (◕‿◕)", reply_chat)
+        send_reply(f"Lookback *{old}h* → *{val}h*. History di-prune.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Angkanya tidak valid .", reply_chat)
 
 def handle_heartbeat_command(args: list, reply_chat: str) -> None:
     if not args:
         send_reply(
-            f"Heartbeat: *{settings['heartbeat_minutes']} menit*~\nUsage: `/heartbeat <0-120>`",
+            f"Heartbeat: *{settings['heartbeat_minutes']} menit*\nUsage: `/heartbeat <0-120>`",
             reply_chat,
         )
         return
     try:
         val = int(args[0])
         if val < 0 or val > 120:
-            send_reply("Harus 0–120 menit ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Harus 0–120 menit .", reply_chat)
             return
         settings["heartbeat_minutes"] = val
         send_reply(
-            "Heartbeat *dimatikan* ya, anata~" if val == 0
-            else f"Heartbeat setiap *{val} menit*, anata~",
+            "Heartbeat *dimatikan* ." if val == 0
+            else f"Heartbeat setiap *{val} menit*.",
             reply_chat,
         )
     except ValueError:
-        send_reply("Angkanya tidak valid ya, anata~ (◕ω◕)", reply_chat)
-
+        send_reply("Angkanya tidak valid .", reply_chat)
 
 def handle_redis_command(reply_chat: str) -> None:
     if not UPSTASH_REDIS_URL:
-        send_reply("Redis belum dikonfigurasi, anata~ (◕ω◕)", reply_chat)
+        send_reply("Redis belum dikonfigurasi.", reply_chat)
         return
     result = _redis_request("GET", f"/get/{REDIS_KEY}")
     if not result or result.get("result") is None:
-        send_reply("❌ Bot A belum simpan data, anata~ (◕ω◕)", reply_chat)
+        send_reply("❌ Bot A belum simpan data.", reply_chat)
         return
     try:
         data       = json.loads(result["result"])
         hrs_stored = len(data) * settings["scan_interval"] / 3600
         lookback   = settings["lookback_hours"]
         status     = "✅ Siap" if hrs_stored >= lookback else f"⏳ {hrs_stored:.1f}h / {lookback}h"
-        last_r     = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum~"
+        last_r     = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
         send_reply(
             f"⚡ *Redis Status*\n"
             f"Points: {len(data)} | {hrs_stored:.1f}h | {status}\n"
@@ -3259,8 +3184,7 @@ def handle_redis_command(reply_chat: str) -> None:
             reply_chat,
         )
     except Exception as e:
-        send_reply(f"Gagal baca, anata: `{e}` (◕ω◕)", reply_chat)
-
+        send_reply(f"Gagal membaca input: `{e}`", reply_chat)
 
 def handle_setpos_command(args: list, reply_chat: str) -> None:
     """
@@ -3293,7 +3217,7 @@ def handle_setpos_command(args: list, reply_chat: str) -> None:
     try:
         strat_str = args[0].upper()
         if strat_str not in ("S1", "S2"):
-            send_reply("Strategi harus *S1* atau *S2* ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Strategi harus *S1* atau *S2* .", reply_chat)
             return
         if args[1].lower() != "eth" or args[5].lower() != "btc":
             send_reply(usage, reply_chat)
@@ -3310,10 +3234,10 @@ def handle_setpos_command(args: list, reply_chat: str) -> None:
         btc_lev   = _pf(args[8].lower().replace("x", ""))
 
         if eth_entry <= 0 or btc_entry <= 0:
-            send_reply("Entry price harus positif ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Entry price harus positif .", reply_chat)
             return
         if not (1 <= eth_lev <= 200) or not (1 <= btc_lev <= 200):
-            send_reply("Leverage harus antara 1x–200x ya, anata~ (◕ω◕)", reply_chat)
+            send_reply("Leverage harus antara 1x–200x .", reply_chat)
             return
 
         eth_liq, btc_liq, eth_val, btc_val = None, None, None, None
@@ -3346,7 +3270,7 @@ def handle_setpos_command(args: list, reply_chat: str) -> None:
         })
 
         saved  = save_pos_data()
-        sv_str = "✅ Tersimpan ke Redis~" if saved else "⚠️ Redis tidak tersedia, data hanya di memory~"
+        sv_str = "✅ Tersimpan ke Redis" if saved else "⚠️ Redis tidak tersedia, data hanya di memory"
 
         eth_dir  = "Long 📈" if eth_qty > 0 else "Short 📉"
         btc_dir  = "Long 📈" if btc_qty > 0 else "Short 📉"
@@ -3368,20 +3292,19 @@ def handle_setpos_command(args: list, reply_chat: str) -> None:
         logger.info(f"pos_data set: {strat_str} ETH {eth_dir} {eth_qty}@{eth_entry} {eth_lev}x | "
                     f"BTC {btc_dir} {btc_qty}@{btc_entry} {btc_lev}x")
         send_reply(
-            f"✅ *Posisi {strat_str} sudah Hinata simpan, anata~* Ufufu... (◕‿◕)\n"
+            f"✅ *Posisi {strat_str} sudah Bot simpan.* \n"
             f"\n"
             f"ETH: *{eth_dir}* {abs(eth_qty):.4f} @ ${eth_entry:,.2f} | {eth_lev:.0f}x\n"
             f"BTC: *{btc_dir}* {abs(btc_qty):.6f} @ ${btc_entry:,.2f} | {btc_lev:.0f}x\n"
             f"{val_note}{liq_note}\n"
             f"{sv_str}\n"
             f"\n"
-            f"Ketik `/health` untuk cek, `/setfunding` untuk set funding rate ya, anata~",
+            f"Ketik `/health` untuk cek, `/setfunding` untuk set funding rate .",
             reply_chat,
         )
     except (ValueError, IndexError) as e:
-        send_reply(f"Format salah ya, anata~ (◕ω◕)\n\n{usage}", reply_chat)
+        send_reply(f"Format salah .\n\n{usage}", reply_chat)
         logger.warning(f"setpos parse error: {e}")
-
 
 def handle_setfunding_command(args: list, reply_chat: str) -> None:
     """
@@ -3442,26 +3365,25 @@ def handle_setfunding_command(args: list, reply_chat: str) -> None:
             )
 
         send_reply(
-            f"✅ *Funding rate sudah Hinata simpan, anata~* (◕‿◕)\n"
+            f"✅ *Funding rate sudah Bot simpan.*\n"
             f"\n"
             f"ETH: {eth_fr:+.4f}%/8h\n"
             f"BTC: {btc_fr:+.4f}%/8h\n"
             f"{preview}\n"
-            f"Ketik `/health` untuk lihat break-even timer ya~",
+            f"Ketik `/health` untuk lihat break-even timer ya",
             reply_chat,
         )
     except (ValueError, IndexError) as e:
-        send_reply(f"Format salah ya, anata~ (◕ω◕)\n\n{usage}", reply_chat)
+        send_reply(f"Format salah .\n\n{usage}", reply_chat)
         logger.warning(f"setfunding parse error: {e}")
-
 
 def handle_velocity_command(reply_chat: str) -> None:
     """Gap velocity & ETA ke TP."""
     vel = calc_gap_velocity()
     if not vel:
         send_reply(
-            "Belum cukup data untuk velocity, anata~ (◕ω◕)\n"
-            f"Sekarang: {len(gap_history)} pts | Butuh minimal 3~",
+            "Belum cukup data untuk velocity.\n"
+            f"Sekarang: {len(gap_history)} pts | Butuh minimal 3",
             reply_chat,
         )
         return
@@ -3509,10 +3431,9 @@ def handle_velocity_command(reply_chat: str) -> None:
         f"*Momentum:* {momentum}\n"
         f"*ETA ke TP:* {eta_s}\n"
         f"\n"
-        f"_Dari {vel['n_pts']} pts terakhir ya, anata~_",
+        f"_Berdasarkan {vel['n_pts']} data point terakhir._",
         reply_chat,
     )
-
 
 def handle_exitconf_command(args: list, reply_chat: str) -> None:
     """Konfigurasi 3-lapis exit confirmation."""
@@ -3555,14 +3476,14 @@ def handle_exitconf_command(args: list, reply_chat: str) -> None:
         settings["exit_confirm_buffer"] = 0.0
         settings["exit_pnl_gate"]       = 0.0
         send_reply(
-            "⚡ *Exit confirmation dimatikan, anata~*\n"
-            "Bot akan exit langsung saat gap menyentuh threshold~ (behaviour lama)\n",
+            "⚡ *Exit confirmation dimatikan.*\n"
+            "Bot akan exit langsung saat gap menyentuh threshold  (behaviour lama)\n",
             reply_chat,
         )
         return
 
     if len(args) < 2:
-        send_reply("Usage: `/exitconf scans|buffer|pnl <nilai>` atau `/exitconf off` ya, anata~", reply_chat)
+        send_reply("Usage: `/exitconf scans|buffer|pnl <nilai>` atau `/exitconf off` .", reply_chat)
         return
 
     try:
@@ -3571,8 +3492,8 @@ def handle_exitconf_command(args: list, reply_chat: str) -> None:
         if key == "scans":
             settings["exit_confirm_scans"] = max(0, int(val))
             send_reply(
-                f"✅ Scan konfirmasi: *{int(val)}x*, anata~\n"
-                f"_Gap harus stay {int(val)} scan sebelum exit~_",
+                f"✅ Scan konfirmasi: *{int(val)}x*.\n"
+                f"_Gap harus stay {int(val)} scan sebelum exit._",
                 reply_chat,
             )
         elif key == "buffer":
@@ -3581,37 +3502,36 @@ def handle_exitconf_command(args: list, reply_chat: str) -> None:
             eff_s1 = et - val
             eff_s2 = et - val
             send_reply(
-                f"✅ Exit buffer: *{val:.2f}%*, anata~\n"
-                f"_Efektif exit S1 di gap ≤ +{eff_s1:.2f}% | S2 di gap ≥ -{eff_s2:.2f}%~_",
+                f"✅ Exit buffer: *{val:.2f}%*.\n"
+                f"_Efektif exit S1 di gap ≤ +{eff_s1:.2f}% | S2 di gap ≥ -{eff_s2:.2f}%._",
                 reply_chat,
             )
         elif key in ("pnl", "pnlgate"):
             settings["exit_pnl_gate"] = max(0.0, val)
             if val > 0 and pos_data.get("eth_entry_price") is None:
                 send_reply(
-                    f"✅ P&L gate: *{val:.2f}%*, anata~\n"
-                    f"_Bot akan tahan exit sampai net P&L ≥ {val:.2f}%~_\n"
-                    f"⚠️ `/setpos` belum diset — P&L gate butuh data posisi~",
+                    f"✅ P&L gate: *{val:.2f}%*.\n"
+                    f"_Bot akan tahan exit sampai net P&L ≥ {val:.2f}%._\n"
+                    f"⚠️ `/setpos` belum diset — P&L gate butuh data posisi",
                     reply_chat,
                 )
             else:
                 send_reply(
-                    f"✅ P&L gate: *{val:.2f}%*, anata~\n"
-                    f"_Bot akan tahan exit sampai net P&L ≥ {val:.2f}%~_",
+                    f"✅ P&L gate: *{val:.2f}%*.\n"
+                    f"_Bot akan tahan exit sampai net P&L ≥ {val:.2f}%._",
                     reply_chat,
                 )
         else:
-            send_reply("Key tidak dikenal ya, anata~ Gunakan: `scans`, `buffer`, atau `pnl`~", reply_chat)
+            send_reply("Key tidak dikenal . Gunakan: `scans`, `buffer`, atau `pnl`", reply_chat)
     except (ValueError, IndexError):
-        send_reply("Format salah ya, anata~ Contoh: `/exitconf scans 2`~", reply_chat)
-
+        send_reply("Format salah . Contoh: `/exitconf scans 2`", reply_chat)
 
 def handle_health_command(reply_chat: str) -> None:
     """Tampilkan health posisi."""
     if pos_data["eth_entry_price"] is None:
         send_reply(
-            "Belum ada posisi yang diset, anata~ (◕ω◕)\n\n"
-            "Gunakan `/setpos` dulu ya~\n\n"
+            "Belum ada posisi yang diset.\n\n"
+            "Gunakan `/setpos` dulu ya\n\n"
             "*Contoh S1* (Long BTC / Short ETH):\n"
             "`/setpos S1 eth 2011.56 -1.4907 50x btc 67794.76 0.029491 50x`\n\n"
             "*Contoh S2* (Long ETH / Short BTC):\n"
@@ -3620,22 +3540,20 @@ def handle_health_command(reply_chat: str) -> None:
         )
         return
     if scan_stats.get("last_btc_price") is None:
-        send_reply("Tunggu sebentar ya, anata~ Hinata belum dapat harga terbaru~ (◕ω◕)", reply_chat)
+        send_reply("Tunggu sebentar . Bot belum dapat harga terbaru", reply_chat)
         return
     h = calc_position_pnl()
     if not h:
-        send_reply("Gagal hitung P&L, anata~ Coba `/setpos` ulang ya~ (◕ω◕)", reply_chat)
+        send_reply("Gagal hitung P&L. Coba `/setpos` ulang ya", reply_chat)
         return
     send_reply(build_position_health_message(h), reply_chat)
-
 
 def handle_clearpos_command(reply_chat: str) -> None:
     """Hapus pos_data dari memory dan Redis."""
     for k in pos_data:
         pos_data[k] = None
     clear_pos_data_redis()
-    send_reply("🗑️ *Data posisi sudah dihapus, anata~* (◕‿◕)\nRedis juga sudah dibersihkan~", reply_chat)
-
+    send_reply("🗑️ *Data posisi sudah dihapus.*\nRedis juga sudah dibersihkan", reply_chat)
 
 def handle_sim_command(args: list, reply_chat: str) -> None:
     """
@@ -3699,13 +3617,13 @@ def handle_sim_command(args: list, reply_chat: str) -> None:
     if cmd == "on":
         settings["sim_enabled"] = True
         send_reply(
-            f"🟢 *Simulation mode ON, anata~* (◕‿◕)\n"
+            f"🟢 *Simulation mode ON.*\n"
             f"\n"
             f"Margin: ${margin:,.0f} per leg | Lev: {lev:.0f}x | Fee: {fee:.3f}%\n"
             f"Total eksposur per trade: ${margin * lev * 2:,.0f}\n"
             f"\n"
-            f"Hinata akan otomatis open posisi saat sinyal entry,\n"
-            f"dan close saat exit/invalidasi~\n"
+            f"Bot akan otomatis open posisi saat sinyal entry,\n"
+            f"dan close saat exit/invalidasi\n"
             f"\n"
             f"_Ubah setting: `/sim margin 200` `/sim lev 20`_",
             reply_chat,
@@ -3715,75 +3633,75 @@ def handle_sim_command(args: list, reply_chat: str) -> None:
         settings["sim_enabled"] = False
         if sim_trade["active"]:
             send_reply(
-                "🔴 *Simulation mode OFF, anata~*\n"
-                "⚠️ Masih ada posisi terbuka — gunakan `/sim on` lagi atau tunggu exit signal~",
+                "🔴 *Simulation mode OFF.*\n"
+                "⚠️ Masih ada posisi terbuka — gunakan `/sim on` lagi atau tunggu exit signal",
                 reply_chat,
             )
         else:
-            send_reply("🔴 *Simulation mode OFF, anata~* Hinata tidak akan auto-trade lagi~", reply_chat)
+            send_reply("🔴 *Simulation mode OFF.* Bot tidak akan auto-trade lagi", reply_chat)
 
     elif cmd == "margin":
         try:
             val = float(args[1])
             if val <= 0 or val > 100000:
-                send_reply("Margin harus antara $1 sampai $100,000 ya, anata~", reply_chat)
+                send_reply("Margin harus antara $1 sampai $100,000 .", reply_chat)
                 return
             settings["sim_margin_usd"] = val
             send_reply(
-                f"✅ Margin per leg: *${val:,.0f}*, anata~\n"
+                f"✅ Margin per leg: *${val:,.0f}*.\n"
                 f"Total eksposur per trade: ${val * settings['sim_leverage'] * 2:,.0f}",
                 reply_chat,
             )
         except (IndexError, ValueError):
-            send_reply("Usage: `/sim margin <usd>` — contoh: `/sim margin 200` ya, anata~", reply_chat)
+            send_reply("Usage: `/sim margin <usd>` — contoh: `/sim margin 200` .", reply_chat)
 
     elif cmd == "lev":
         try:
             val = float(args[1])
             if not 1 <= val <= 200:
-                send_reply("Leverage harus 1x–200x ya, anata~", reply_chat)
+                send_reply("Leverage harus 1x–200x .", reply_chat)
                 return
             settings["sim_leverage"] = val
             send_reply(
-                f"✅ Leverage: *{val:.0f}x*, anata~\n"
+                f"✅ Leverage: *{val:.0f}x*.\n"
                 f"Total eksposur per trade: ${settings['sim_margin_usd'] * val * 2:,.0f}",
                 reply_chat,
             )
         except (IndexError, ValueError):
-            send_reply("Usage: `/sim lev <n>` — contoh: `/sim lev 20` ya, anata~", reply_chat)
+            send_reply("Usage: `/sim lev <n>` — contoh: `/sim lev 20` .", reply_chat)
 
     elif cmd == "fee":
         try:
             val = float(args[1])
             settings["sim_fee_pct"] = val
-            send_reply(f"✅ Fee taker: *{val:.4f}%* per side, anata~", reply_chat)
+            send_reply(f"✅ Fee taker: *{val:.4f}%* per side.", reply_chat)
         except (IndexError, ValueError):
-            send_reply("Usage: `/sim fee <pct>` — contoh: `/sim fee 0.06` ya, anata~", reply_chat)
+            send_reply("Usage: `/sim fee <pct>` — contoh: `/sim fee 0.06` .", reply_chat)
 
     elif cmd == "reset":
         sim_trade["history"].clear()
-        send_reply("✅ History trades direset, anata~ (◕‿◕)", reply_chat)
+        send_reply("✅ History trades direset.", reply_chat)
 
     elif cmd == "regime":
         sub = args[1].lower() if len(args) > 1 else ""
         if sub == "on":
             settings["sim_regime_filter"] = True
             send_reply(
-                "✅ *Regime filter ON, anata~* (◕‿◕)\n"
+                "✅ *Regime filter ON.*\n"
                 "\n"
                 "Sim hanya entry kalau arah market selaras gap:\n"
                 "• S1 (gap+) → butuh market *pump* (BTC naik)\n"
                 "• S2 (gap-) → butuh market *dump* (BTC turun)\n"
                 "\n"
-                "_Gap- di tengah pump = BTC kencang, bukan ETH lemah → skip~_",
+                "_Gap- di tengah pump = BTC kencang, bukan ETH lemah → dilewati._",
                 reply_chat,
             )
         elif sub == "off":
             settings["sim_regime_filter"] = False
             send_reply(
-                "⚠️ *Regime filter OFF, anata~*\n"
-                "Sim akan entry semua sinyal gap tanpa cek arah market~\n"
-                "_Hati-hati: bisa masuk posisi lawan trend~_",
+                "⚠️ *Regime filter OFF.*\n"
+                "Sim akan entry semua sinyal gap tanpa cek arah market\n"
+                "_Hati-hati: bisa masuk posisi lawan trend._",
                 reply_chat,
             )
         else:
@@ -3805,8 +3723,7 @@ def handle_sim_command(args: list, reply_chat: str) -> None:
             )
 
     else:
-        send_reply("Command tidak dikenal ya, anata~ Ketik `/sim` untuk daftar perintah~", reply_chat)
-
+        send_reply("Command tidak dikenal . Ketik `/sim` untuk daftar perintah", reply_chat)
 
 def handle_simstats_command(reply_chat: str) -> None:
     """Rekap statistik semua sim trades."""
@@ -3827,8 +3744,8 @@ def handle_simstats_command(reply_chat: str) -> None:
         send_reply(
             f"{active_str}"
             f"📊 *Sim Stats*\n\n"
-            f"Belum ada trade yang selesai, anata~ (◕ω◕)\n"
-            f"Aktifkan `/sim on` dan tunggu sinyal entry~",
+            f"Belum ada trade yang selesai.\n"
+            f"Aktifkan `/sim on` dan tunggu sinyal entry",
             reply_chat,
         )
         return
@@ -3875,10 +3792,9 @@ def handle_simstats_command(reply_chat: str) -> None:
         f"│ *5 Trade Terakhir:*\n"
         f"{recent_lines}"
         f"└─────────────────────\n"
-        f"_Ketik `/sim reset` untuk hapus history ya, anata~_",
+        f"_Ketik `/sim reset` untuk hapus history ._",
         reply_chat,
     )
-
 
 def handle_help_command(reply_chat: str) -> None:
     enabled = settings["sim_enabled"]
@@ -3892,7 +3808,7 @@ def handle_help_command(reply_chat: str) -> None:
     pos_s   = f"📍 {sim_trade['strategy']}" if active else "💤 idle"
 
     send_reply(
-        f"🤖 *Hinata — Simulation Bot*\n"
+        f"🤖 *Bot — Simulation Bot*\n"
         f"_Gap: {gap_s} | Sim: {sim_s} | Posisi: {pos_s} | Trades: {n_trade}_\n"
         f"\n"
         f"*— Kontrol Simulasi —*\n"
@@ -3915,7 +3831,6 @@ def handle_help_command(reply_chat: str) -> None:
         reply_chat,
     )
 
-
 def handle_help_market_command(reply_chat: str) -> None:
     send_reply(
         f"📈 *Market Analysis*\n"
@@ -3934,10 +3849,9 @@ def handle_help_market_command(reply_chat: str) -> None:
         f"             — Set modal untuk sizing\n"
         f"\n"
         f"───────────────────\n"
-        f"_Sinyal otomatis Hinata kirim saat gap ±threshold, anata~_",
+        f"_Sinyal otomatis Bot kirim saat gap ±threshold._",
         reply_chat,
     )
-
 
 def handle_help_pos_command(reply_chat: str) -> None:
     eth_fr = pos_data.get("eth_funding_rate")
@@ -3961,10 +3875,9 @@ def handle_help_pos_command(reply_chat: str) -> None:
         f"`/clearpos`  — Hapus data posisi\n"
         f"\n"
         f"───────────────────\n"
-        f"_Data Hinata simpan di Redis, survive restart ya, anata~_",
+        f"_Data Bot simpan di Redis, survive restart ._",
         reply_chat,
     )
-
 
 def handle_help_config_command(reply_chat: str) -> None:
     et    = settings["entry_threshold"]
@@ -4013,7 +3926,6 @@ def handle_help_config_command(reply_chat: str) -> None:
         reply_chat,
     )
 
-
 def handle_help_example_command(reply_chat: str) -> None:
     et = settings["exit_threshold"]
     send_reply(
@@ -4051,7 +3963,6 @@ def handle_help_example_command(reply_chat: str) -> None:
         reply_chat,
     )
 
-
 # =============================================================================
 # Startup Message
 # =============================================================================
@@ -4060,13 +3971,13 @@ def send_startup_message() -> bool:
     price_info  = (
         f"\n💰 BTC: ${float(price_data.btc_price):,.2f} | ETH: ${float(price_data.eth_price):,.2f}\n"
         if price_data
-        else "\n⚠️ Gagal ambil harga~ Hinata terus coba ya, anata~ (◕ω◕)\n"
+        else "\n⚠️ Gagal mengambil data harga. Bot akan terus mencoba.\n"
     )
     hrs_loaded  = len(price_history) * settings["scan_interval"] / 3600
     hist_info   = (
         f"⚡ History Bot A: *{hrs_loaded:.1f}h* siap!\n"
         if price_history
-        else f"⏳ Menunggu Bot A ya, anata~ Sinyal setelah {settings['lookback_hours']}h tersedia~\n"
+        else f"⏳ Menunggu Bot A . Sinyal setelah {settings['lookback_hours']}h tersedia\n"
     )
     peak_s      = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     cap_str     = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "belum diset (gunakan /capital)"
@@ -4080,12 +3991,12 @@ def send_startup_message() -> bool:
             f"\n🏥 *Posisi {strat} di-restore:*\n"
             f"ETH {eth_dir} @ ${pos_data['eth_entry_price']:,.2f} | "
             f"BTC {btc_dir} @ ${pos_data['btc_entry_price']:,.2f}\n"
-            f"_Ketik `/health` untuk cek kesehatan ya, anata~_\n"
+            f"_Ketik `/health` untuk cek kesehatan ._\n"
         )
 
     return send_alert(
         f"………\n"
-        f"Anata~! *Hinata sudah siap menjaga, anata~* Ufufu... (◕‿◕)\n"
+        f"Anata! *Bot sudah siap menjaga.* \n"
         f"_Swing / Day Trade Edition — Mentor Analysis_\n"
         f"{price_info}\n"
         f"📊 Scan: {settings['scan_interval']}s | Lookback: {settings['lookback_hours']}h\n"
@@ -4093,7 +4004,7 @@ def send_startup_message() -> bool:
         f"⚠️ Invalid: ±{settings['invalidation_threshold']}% | 🛑 TSL: {settings['sl_pct']}%\n"
         f"🔍 Peak Mode: {peak_s} | 💰 Modal: {cap_str}\n"
         f"{pos_info}\n"
-        f"*🧠 Analisis yang Hinata siapkan untuk anata di setiap entry signal:*\n"
+        f"*🧠 Analisis yang disajikan di setiap entry signal:**\n"
         f"• Gap Driver (ETH-led vs BTC-led)\n"
         f"• ETH/BTC Ratio Percentile + Conviction\n"
         f"• Dollar-Neutral Sizing Guide\n"
@@ -4101,10 +4012,9 @@ def send_startup_message() -> bool:
         f"• Net Combined P&L Tracker\n"
         f"\n"
         f"{hist_info}\n"
-        f"Ketik `/help` untuk semua command ya, anata~\n"
-        f"Hinata akan selalu di sini menemanimu~ ⚡"
+        f"Ketik `/help` untuk semua command .\n"
+        f"Bot akan selalu di sini menemanimu  ⚡"
     )
-
 
 # =============================================================================
 # Command Polling Thread
@@ -4117,7 +4027,6 @@ def command_polling_thread() -> None:
             logger.debug(f"Command polling error: {e}")
             time.sleep(5)
 
-
 # =============================================================================
 # Main Loop
 # =============================================================================
@@ -4125,7 +4034,7 @@ def main_loop() -> None:
     global last_heartbeat_time, last_redis_refresh
 
     logger.info("=" * 60)
-    logger.info("Monk Bot B — Hinata | Swing/Day Trade | Mentor Analysis Edition")
+    logger.info("Monk Bot B — Bot | Swing/Day Trade | Mentor Analysis Edition")
     logger.info(
         f"Entry: ±{settings['entry_threshold']}% | Exit: ±{settings['exit_threshold']}% | "
         f"Invalid: ±{settings['invalidation_threshold']}% | "
@@ -4211,7 +4120,6 @@ def main_loop() -> None:
         except Exception as e:
             logger.exception(f"Unexpected error: {e}")
             time.sleep(60)
-
 
 # =============================================================================
 # Entry Point
