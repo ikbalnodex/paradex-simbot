@@ -89,7 +89,7 @@ class ParadexExecutor:
         try:
             logger.info(f"Connecting to Paradex (L1 mode): {self._l1_address[:12]}...")
             self._pdx = Paradex(
-                env=Environment.PROD,
+                env=Environment.MAINNET,
                 l1_address=self._l1_address,
                 l1_private_key=self._l1_key,
             )
