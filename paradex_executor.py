@@ -1,6 +1,6 @@
 """
 paradex_executor.py — Paradex Live Trading Executor
-Uses paradex-py library for proper StarkNet L2 authentication.
+Uses paradex-py library. Keys passed as-is (string "0x...").
 """
 import asyncio
 import logging
@@ -17,23 +17,12 @@ except ImportError as e:
     logger.error(f"paradex-py not installed: {e}")
 
 
-def _to_int(key: str) -> int:
-    """Convert hex string ke integer."""
-    key = key.strip()
-    if key.startswith(("0x", "0X")):
-        return int(key, 16)
-    try:
-        return int(key, 16)
-    except ValueError:
-        return int(key)
-
-
 class ParadexExecutor:
     """
-    Mode L2 (Recommended — pakai Paradex Private Key dari UI):
+    Mode L2 (Recommended):
         ParadexExecutor(l2_private_key="0x...", l2_address="0x...")
 
-    Mode L1 (pakai Ethereum private key):
+    Mode L1 (Ethereum):
         ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
     """
 
@@ -44,10 +33,10 @@ class ParadexExecutor:
         l2_private_key: str = None,
         l2_address:     str = None,
     ):
-        self.account_address = l1_address or l2_address or ""
-        self._ready          = False
-        self._positions      = {}
-        self._pdx            = None
+        self.account_address = (l1_address or l2_address or "").strip()
+        self._ready   = False
+        self._positions = {}
+        self._pdx     = None
 
         if not PARADEX_PY_AVAILABLE:
             logger.error("paradex-py tidak tersedia")
@@ -56,32 +45,26 @@ class ParadexExecutor:
         try:
             if l2_private_key is not None:
                 # ── Mode L2 ──────────────────────────────────────────────
-                # ParadexSubkey sudah auto-init di __init__, JANGAN panggil
-                # init_account() lagi — itu yang menyebabkan error "PROD"
+                logger.info("Initializing ParadexSubkey (L2 mode)...")
                 self._pdx = ParadexSubkey(
                     env=Environment.PROD,
                     l2_private_key=l2_private_key.strip(),
                     l2_address=l2_address.strip(),
                 )
-                self.account_address = l2_address
             else:
                 # ── Mode L1 ──────────────────────────────────────────────
-                # l1_private_key HARUS integer, bukan string
+                logger.info("Initializing Paradex (L1 mode)...")
                 self._pdx = Paradex(
                     env=Environment.PROD,
                     l1_address=l1_address.strip(),
-                    l1_private_key=_to_int(l1_private_key),
+                    l1_private_key=l1_private_key.strip(),
                 )
-                self.account_address = l1_address
 
-            # Test koneksi
-            bal = self.get_balance()
-            if bal:
-                self._ready = True
-                logger.info(f"✅ Paradex connected: {self.account_address[:12]}...")
-            else:
-                logger.warning("Paradex connected tapi get_balance gagal")
-                self._ready = True  # tetap ready, mungkin balance 0
+            # init_account() WAJIB dipanggil — generate JWT otomatis
+            self._run(self._pdx.init_account())
+
+            self._ready = True
+            logger.info(f"✅ Paradex connected: {self.account_address[:12]}...")
 
         except Exception as e:
             logger.warning(f"Paradex init failed: {e}")
@@ -97,18 +80,13 @@ class ParadexExecutor:
             if loop.is_running():
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, coro)
-                    return future.result()
+                    return pool.submit(asyncio.run, coro).result()
             if loop.is_closed():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             return loop.run_until_complete(coro)
         except RuntimeError:
             return asyncio.run(coro)
-
-    # ─────────────────────────────────────────────────────────────
-    # Public
-    # ─────────────────────────────────────────────────────────────
 
     def is_ready(self) -> bool:
         return self._ready and self._pdx is not None
@@ -118,7 +96,7 @@ class ParadexExecutor:
     # ─────────────────────────────────────────────────────────────
 
     def get_balance(self) -> dict:
-        if self._pdx is None:
+        if not self.is_ready():
             return {}
         try:
             data = self._run(self._pdx.api_client.fetch_account_summary())
@@ -204,8 +182,7 @@ class ParadexExecutor:
             if result:
                 if hasattr(result, "__dict__"):
                     result = vars(result)
-                order_id = result.get("id", result.get("order_id", "?"))
-                logger.info(f"Order placed: {order_id}")
+                logger.info(f"Order placed: {result.get('id', '?')}")
                 return result
             return None
         except Exception as e:
@@ -232,12 +209,7 @@ class ParadexExecutor:
             if not data:
                 return []
             results = data if isinstance(data, list) else data.get("results", [])
-            out = []
-            for f in results:
-                if hasattr(f, "__dict__"):
-                    f = vars(f)
-                out.append(f)
-            return out
+            return [vars(f) if hasattr(f, "__dict__") else f for f in results]
         except Exception as e:
             logger.warning(f"get_fills error: {e}")
             return []
@@ -255,12 +227,11 @@ class ParadexExecutor:
         if not pos:
             logger.info(f"No position to close for {market}")
             return None
-        size       = abs(pos["size"])
         close_side = "SELL" if pos["side"] == "LONG" else "BUY"
         return self.place_order(
             market=market,
             side=close_side,
-            size=size,
+            size=abs(pos["size"]),
             order_type=order_type,
             price=price,
             reduce_only=True,
