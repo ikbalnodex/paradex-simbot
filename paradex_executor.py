@@ -236,17 +236,17 @@ class ParadexExecutor:
             return None
         try:
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
-            import inspect
-            sig = inspect.signature(self._pdx.api_client.submit_order)
-            logger.info(f'submit_order signature: {sig}')
-            result = self._pdx.api_client.submit_order(
+            from paradex_py.common.order import Order, OrderSide, OrderType
+            order_obj = Order(
                 market=market,
-                side=side.upper(),
-                type=order_type.upper(),
+                side=OrderSide[side.upper()],
+                type=OrderType[order_type.upper()],
                 size=str(size),
                 reduce_only=reduce_only,
-                **({'price': str(price)} if price is not None else {})
             )
+            if price is not None:
+                order_obj.price = str(price)
+            result = self._pdx.api_client.submit_order(order=order_obj, signer=self._pdx.account)
             if result is None:
                 return None
             if hasattr(result, "__dict__"):
