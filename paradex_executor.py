@@ -118,13 +118,12 @@ class ParadexExecutor:
 
     def get_account_summary(self) -> dict:
         """Ambil balance dan equity dari akun."""
-        # Coba beberapa endpoint
-        data = self._get("/account/summary")
-        if data:
-            return data
-        data = self._get("/account")
-        if data and "account" in data:
-            return data["account"]
+        for path in ("/account/summary", "/account"):
+            data = self._get(path)
+            if isinstance(data, list) and data:
+                return data[0]          # Paradex kadang return list
+            if isinstance(data, dict):
+                return data.get("account", data)
         return {}
 
     def get_balance(self) -> dict:
@@ -134,13 +133,13 @@ class ParadexExecutor:
             return {}
         try:
             return {
-                "free_collateral":  float(summary.get("free_collateral",  summary.get("available_margin", 0))),
-                "total_collateral": float(summary.get("total_collateral", summary.get("initial_margin",   0))),
-                "equity":           float(summary.get("equity",           summary.get("account_value",    0))),
+                "free_collateral":  float(summary.get("free_collateral",  summary.get("available_margin",  0))),
+                "total_collateral": float(summary.get("total_collateral", summary.get("initial_margin",    0))),
+                "equity":           float(summary.get("equity",           summary.get("account_value",     0))),
                 "unrealized_pnl":   float(summary.get("unrealized_pnl",  0)),
             }
         except Exception as e:
-            logger.warning(f"get_balance parse error: {e}")
+            logger.warning(f"get_balance parse error: {e} | raw: {summary}")
             return {}
 
     # ─────────────────────────────────────────────────────────────
@@ -152,7 +151,12 @@ class ParadexExecutor:
         data = self._get("/positions")
         if not data:
             return
-        results = data if isinstance(data, list) else data.get("results", [])
+        if isinstance(data, list):
+            results = data
+        elif isinstance(data, dict):
+            results = data.get("results", data.get("positions", []))
+        else:
+            results = []
         self._positions = {}
         for pos in results:
             market = pos.get("market", "")
