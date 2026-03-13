@@ -53,15 +53,14 @@ class ParadexExecutor:
                 )
             else:
                 # ── Mode L1 ──────────────────────────────────────────────
+                # L1 mode wajib panggil init_account() untuk derive L2 keys
                 logger.info("Initializing Paradex (L1 mode)...")
                 self._pdx = Paradex(
                     env=Environment.PROD,
                     l1_address=l1_address.strip(),
                     l1_private_key=l1_private_key.strip(),
                 )
-
-            # init_account() WAJIB dipanggil — generate JWT otomatis
-            self._run(self._pdx.init_account())
+                self._run(self._pdx.init_account())
 
             self._ready = True
             logger.info(f"✅ Paradex connected: {self.account_address[:12]}...")
