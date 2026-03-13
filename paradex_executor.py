@@ -236,14 +236,17 @@ class ParadexExecutor:
             return None
         try:
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
-            result = self._pdx.api_client.submit_order(
-                market=market,
-                order_side=side.upper(),
-                order_type=order_type.upper(),
-                size=str(size),
-                limit_price=str(price) if price is not None else None,
-                reduce_only=reduce_only,
-            )
+            from paradex_py.api.models.order import OrderSide, OrderType
+            order_input = {
+                'market': market,
+                'side': side.upper(),
+                'type': order_type.upper(),
+                'size': str(size),
+                'reduce_only': reduce_only,
+            }
+            if price is not None:
+                order_input['price'] = str(price)
+            result = self._pdx.api_client.submit_order(**order_input)
             if result is None:
                 return None
             if hasattr(result, "__dict__"):
