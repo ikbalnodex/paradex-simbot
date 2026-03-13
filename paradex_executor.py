@@ -153,7 +153,7 @@ class ParadexExecutor:
         if not self.is_ready():
             return {}
         try:
-            data = self._run(self._pdx.api_client.fetch_account_summary())
+            data = self._pdx.api_client.fetch_account_summary()
             if data is None:
                 return {}
             if hasattr(data, "__dict__"):
@@ -182,7 +182,7 @@ class ParadexExecutor:
         if not self.is_ready():
             return
         try:
-            data = self._run(self._pdx.api_client.fetch_positions())
+            data = self._pdx.api_client.fetch_positions()
             if data is None:
                 return
             if isinstance(data, list):
@@ -236,14 +236,14 @@ class ParadexExecutor:
             return None
         try:
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
-            result = self._run(self._pdx.api_client.submit_order(
+            result = self._pdx.api_client.submit_order(
                 market=market,
                 order_side=side.upper(),
                 order_type=order_type.upper(),
                 size=str(size),
                 limit_price=str(price) if price is not None else None,
                 reduce_only=reduce_only,
-            ))
+            )
             if result is None:
                 return None
             if hasattr(result, "__dict__"):
@@ -264,9 +264,9 @@ class ParadexExecutor:
             return False
         try:
             if market:
-                self._run(self._pdx.api_client.cancel_all_orders(market=market))
+                self._pdx.api_client.cancel_all_orders(market=market)
             else:
-                self._run(self._pdx.api_client.cancel_all_orders())
+                self._pdx.api_client.cancel_all_orders()
             return True
         except Exception as e:
             logger.warning(f"cancel_all_orders error: {e}")
@@ -279,7 +279,7 @@ class ParadexExecutor:
             kwargs = {"page_size": limit}
             if market:
                 kwargs["market"] = market
-            data = self._run(self._pdx.api_client.fetch_fills(**kwargs))
+            data = self._pdx.api_client.fetch_fills(**kwargs)
             if not data:
                 return []
             results = data if isinstance(data, list) else data.get("results", [])
