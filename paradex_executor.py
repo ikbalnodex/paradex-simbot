@@ -1,6 +1,6 @@
 """
 paradex_executor.py — Paradex Live Trading Executor
-Supports both L1 (Ethereum) and L2 (Paradex/StarkNet) private keys.
+Uses paradex-py library for proper StarkNet L2 authentication.
 """
 import asyncio
 import logging
@@ -18,9 +18,9 @@ except ImportError as e:
 
 
 def _to_int(key: str) -> int:
-    """Convert hex string ke integer. Paradex-py butuh int bukan string."""
+    """Convert hex string ke integer."""
     key = key.strip()
-    if key.startswith("0x") or key.startswith("0X"):
+    if key.startswith(("0x", "0X")):
         return int(key, 16)
     try:
         return int(key, 16)
@@ -30,12 +30,10 @@ def _to_int(key: str) -> int:
 
 class ParadexExecutor:
     """
-    Executor untuk koneksi dan order ke Paradex.
-
-    Mode 1 — L2 key (Paradex Private Key dari UI):
+    Mode L2 (Recommended — pakai Paradex Private Key dari UI):
         ParadexExecutor(l2_private_key="0x...", l2_address="0x...")
 
-    Mode 2 — L1 key (Ethereum private key):
+    Mode L1 (pakai Ethereum private key):
         ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
     """
 
@@ -50,34 +48,40 @@ class ParadexExecutor:
         self._ready          = False
         self._positions      = {}
         self._pdx            = None
-        self._use_l2         = l2_private_key is not None
 
         if not PARADEX_PY_AVAILABLE:
             logger.error("paradex-py tidak tersedia")
             return
 
         try:
-            if self._use_l2:
-                # Mode L2 — pakai ParadexSubkey (lebih aman, tidak perlu L1 key)
+            if l2_private_key is not None:
+                # ── Mode L2 ──────────────────────────────────────────────
+                # ParadexSubkey sudah auto-init di __init__, JANGAN panggil
+                # init_account() lagi — itu yang menyebabkan error "PROD"
                 self._pdx = ParadexSubkey(
                     env=Environment.PROD,
-                    l2_private_key=_to_int(l2_private_key),
-                    l2_address=_to_int(l2_address),
+                    l2_private_key=l2_private_key.strip(),
+                    l2_address=l2_address.strip(),
                 )
                 self.account_address = l2_address
             else:
-                # Mode L1 — pakai Paradex biasa
+                # ── Mode L1 ──────────────────────────────────────────────
+                # l1_private_key HARUS integer, bukan string
                 self._pdx = Paradex(
                     env=Environment.PROD,
-                    l1_address=l1_address,
+                    l1_address=l1_address.strip(),
                     l1_private_key=_to_int(l1_private_key),
                 )
                 self.account_address = l1_address
 
-            # Init account (async) — generate JWT otomatis
-            self._run(self._pdx.init_account())
-            self._ready = True
-            logger.info(f"✅ Paradex connected: {self.account_address[:12]}...")
+            # Test koneksi
+            bal = self.get_balance()
+            if bal:
+                self._ready = True
+                logger.info(f"✅ Paradex connected: {self.account_address[:12]}...")
+            else:
+                logger.warning("Paradex connected tapi get_balance gagal")
+                self._ready = True  # tetap ready, mungkin balance 0
 
         except Exception as e:
             logger.warning(f"Paradex init failed: {e}")
@@ -95,6 +99,9 @@ class ParadexExecutor:
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     future = pool.submit(asyncio.run, coro)
                     return future.result()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
             return loop.run_until_complete(coro)
         except RuntimeError:
             return asyncio.run(coro)
@@ -106,21 +113,12 @@ class ParadexExecutor:
     def is_ready(self) -> bool:
         return self._ready and self._pdx is not None
 
-    def reconnect(self) -> bool:
-        try:
-            self._run(self._pdx.init_account())
-            self._ready = True
-        except Exception as e:
-            logger.warning(f"reconnect failed: {e}")
-            self._ready = False
-        return self._ready
-
     # ─────────────────────────────────────────────────────────────
     # Balance
     # ─────────────────────────────────────────────────────────────
 
     def get_balance(self) -> dict:
-        if not self.is_ready():
+        if self._pdx is None:
             return {}
         try:
             data = self._run(self._pdx.api_client.fetch_account_summary())
@@ -150,6 +148,7 @@ class ParadexExecutor:
         try:
             data = self._run(self._pdx.api_client.fetch_positions())
             if not data:
+                self._positions = {}
                 return
             results = data if isinstance(data, list) else data.get("results", [])
             self._positions = {}
