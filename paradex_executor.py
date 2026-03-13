@@ -1,6 +1,6 @@
 """
 paradex_executor.py — Paradex Live Trading Executor
-Uses paradex-py library for proper StarkNet L2 authentication.
+Supports both L1 (Ethereum) and L2 (Paradex/StarkNet) private keys.
 """
 import asyncio
 import logging
@@ -9,7 +9,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 try:
-    from paradex_py import Paradex
+    from paradex_py import Paradex, ParadexSubkey
     from paradex_py.environment import Environment
     PARADEX_PY_AVAILABLE = True
 except ImportError as e:
@@ -17,68 +17,117 @@ except ImportError as e:
     logger.error(f"paradex-py not installed: {e}")
 
 
+def _to_int(key: str) -> int:
+    """Convert hex string ke integer. Paradex-py butuh int bukan string."""
+    key = key.strip()
+    if key.startswith("0x") or key.startswith("0X"):
+        return int(key, 16)
+    try:
+        return int(key, 16)
+    except ValueError:
+        return int(key)
+
+
 class ParadexExecutor:
     """
     Executor untuk koneksi dan order ke Paradex.
-    Menggunakan paradex-py dengan L1 Ethereum private key.
+
+    Mode 1 — L2 key (Paradex Private Key dari UI):
+        ParadexExecutor(l2_private_key="0x...", l2_address="0x...")
+
+    Mode 2 — L1 key (Ethereum private key):
+        ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
     """
 
-    def __init__(self, l1_private_key: str, l1_address: str):
-        self.l1_private_key  = l1_private_key
-        self.account_address = l1_address
+    def __init__(
+        self,
+        l1_private_key: str = None,
+        l1_address:     str = None,
+        l2_private_key: str = None,
+        l2_address:     str = None,
+    ):
+        self.account_address = l1_address or l2_address or ""
         self._ready          = False
         self._positions      = {}
         self._pdx            = None
+        self._use_l2         = l2_private_key is not None
 
         if not PARADEX_PY_AVAILABLE:
             logger.error("paradex-py tidak tersedia")
             return
 
-        self._ready = self._init_client()
+        try:
+            if self._use_l2:
+                # Mode L2 — pakai ParadexSubkey (lebih aman, tidak perlu L1 key)
+                self._pdx = ParadexSubkey(
+                    env=Environment.PROD,
+                    l2_private_key=_to_int(l2_private_key),
+                    l2_address=_to_int(l2_address),
+                )
+                self.account_address = l2_address
+            else:
+                # Mode L1 — pakai Paradex biasa
+                self._pdx = Paradex(
+                    env=Environment.PROD,
+                    l1_address=l1_address,
+                    l1_private_key=_to_int(l1_private_key),
+                )
+                self.account_address = l1_address
+
+            # Init account (async) — generate JWT otomatis
+            self._run(self._pdx.init_account())
+            self._ready = True
+            logger.info(f"✅ Paradex connected: {self.account_address[:12]}...")
+
+        except Exception as e:
+            logger.warning(f"Paradex init failed: {e}")
+            self._ready = False
+
+    # ─────────────────────────────────────────────────────────────
+    # Async runner
+    # ─────────────────────────────────────────────────────────────
 
     def _run(self, coro):
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, coro)
+                    return future.result()
             return loop.run_until_complete(coro)
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            return loop.run_until_complete(coro)
+            return asyncio.run(coro)
 
-    def _init_client(self) -> bool:
-        try:
-            self._pdx = Paradex(
-                env=Environment.PROD,
-                l1_address=self.account_address,
-                l1_private_key=self.l1_private_key,
-            )
-            account = self._run(self._pdx.account.get())
-            if account:
-                logger.info(f"✅ Paradex connected: {self.account_address[:10]}...")
-                return True
-            return False
-        except Exception as e:
-            logger.warning(f"Paradex init failed: {e}")
-            return False
+    # ─────────────────────────────────────────────────────────────
+    # Public
+    # ─────────────────────────────────────────────────────────────
 
     def is_ready(self) -> bool:
         return self._ready and self._pdx is not None
 
     def reconnect(self) -> bool:
-        self._ready = self._init_client()
+        try:
+            self._run(self._pdx.init_account())
+            self._ready = True
+        except Exception as e:
+            logger.warning(f"reconnect failed: {e}")
+            self._ready = False
         return self._ready
+
+    # ─────────────────────────────────────────────────────────────
+    # Balance
+    # ─────────────────────────────────────────────────────────────
 
     def get_balance(self) -> dict:
         if not self.is_ready():
             return {}
         try:
-            data = self._run(self._pdx.account.get())
+            data = self._run(self._pdx.api_client.fetch_account_summary())
             if not data:
                 return {}
             if hasattr(data, "__dict__"):
-                data = data.__dict__
+                data = vars(data)
             if isinstance(data, list) and data:
                 data = data[0]
             return {
@@ -91,18 +140,22 @@ class ParadexExecutor:
             logger.warning(f"get_balance error: {e}")
             return {}
 
+    # ─────────────────────────────────────────────────────────────
+    # Positions
+    # ─────────────────────────────────────────────────────────────
+
     def sync_all(self):
         if not self.is_ready():
             return
         try:
-            data = self._run(self._pdx.positions.list())
+            data = self._run(self._pdx.api_client.fetch_positions())
             if not data:
                 return
-            results = data if isinstance(data, list) else getattr(data, "results", [])
+            results = data if isinstance(data, list) else data.get("results", [])
             self._positions = {}
             for pos in results:
                 if hasattr(pos, "__dict__"):
-                    pos = pos.__dict__
+                    pos = vars(pos)
                 market = pos.get("market", "")
                 size   = float(pos.get("size", 0))
                 if size == 0:
@@ -123,6 +176,10 @@ class ParadexExecutor:
     def get_live_position(self, market: str) -> Optional[dict]:
         return self._positions.get(market)
 
+    # ─────────────────────────────────────────────────────────────
+    # Orders
+    # ─────────────────────────────────────────────────────────────
+
     def place_order(
         self,
         market:      str,
@@ -136,21 +193,18 @@ class ParadexExecutor:
             logger.warning("Paradex not ready — cannot place order")
             return None
         try:
-            order_params = {
-                "market":      market,
-                "side":        side.upper(),
-                "type":        order_type.upper(),
-                "size":        str(size),
-                "reduce_only": reduce_only,
-            }
-            if order_type.upper() == "LIMIT" and price is not None:
-                order_params["price"] = str(price)
-
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
-            result = self._run(self._pdx.orders.create(**order_params))
+            result = self._run(self._pdx.api_client.submit_order(
+                market=market,
+                order_side=side.upper(),
+                order_type=order_type.upper(),
+                size=str(size),
+                limit_price=str(price) if price else None,
+                reduce_only=reduce_only,
+            ))
             if result:
                 if hasattr(result, "__dict__"):
-                    result = result.__dict__
+                    result = vars(result)
                 order_id = result.get("id", result.get("order_id", "?"))
                 logger.info(f"Order placed: {order_id}")
                 return result
@@ -163,43 +217,26 @@ class ParadexExecutor:
         if not self.is_ready():
             return False
         try:
-            if market:
-                self._run(self._pdx.orders.cancel_all(market=market))
-            else:
-                self._run(self._pdx.orders.cancel_all())
+            self._run(self._pdx.api_client.cancel_all_orders(market=market or ""))
             return True
         except Exception as e:
             logger.warning(f"cancel_all_orders error: {e}")
             return False
 
-    def get_open_orders(self, market: str = None) -> list:
-        if not self.is_ready():
-            return []
-        try:
-            params = {"market": market} if market else {}
-            data   = self._run(self._pdx.orders.list(**params))
-            if not data:
-                return []
-            return data if isinstance(data, list) else getattr(data, "results", [])
-        except Exception as e:
-            logger.warning(f"get_open_orders error: {e}")
-            return []
-
     def get_fills(self, market: str = None, limit: int = 10) -> list:
         if not self.is_ready():
             return []
         try:
-            params = {"page_size": limit}
-            if market:
-                params["market"] = market
-            data = self._run(self._pdx.fills.list(**params))
+            data = self._run(self._pdx.api_client.fetch_fills(
+                market=market or "", page_size=limit
+            ))
             if not data:
                 return []
-            results = data if isinstance(data, list) else getattr(data, "results", [])
+            results = data if isinstance(data, list) else data.get("results", [])
             out = []
             for f in results:
                 if hasattr(f, "__dict__"):
-                    f = f.__dict__
+                    f = vars(f)
                 out.append(f)
             return out
         except Exception as e:
