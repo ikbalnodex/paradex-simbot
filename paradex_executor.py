@@ -126,7 +126,14 @@ class ParadexExecutor:
                 l1_address=self._l1_address,
                 l1_private_key=_int_from_hex(self._l1_key),  # HARUS integer
             )
-            self._run(self._pdx.init_account(l1_address=self._l1_address))
+            try:
+                self._run(self._pdx.init_account(l1_address=self._l1_address))
+            except Exception as init_err:
+                # "already initialized" = account sudah ada, bukan error
+                if "already initialized" in str(init_err).lower():
+                    logger.info("Account already initialized — OK, continuing")
+                else:
+                    raise init_err
             self._ready = True
             logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
         except Exception as e:
