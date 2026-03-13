@@ -317,15 +317,17 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
     elif sub == "init":
         if len(args) < 3:
             reply(
-                "⚠️ *Usage:* `/pdx init <jwt_token> <account_address>`\n\n"
-                "_JWT token dan address didapat dari Paradex > Settings > Subaccounts / API_"
+                "⚠️ *Usage:* `/pdx init <l1_private_key> <l1_address>`\n\n"
+                "• `l1_private_key` — Ethereum private key kamu (dimulai `0x...`)\n"
+                "• `l1_address` — Ethereum wallet address kamu (dimulai `0x...`)\n\n"
+                "⚠️ _Kirim command ini hanya di chat pribadi yang aman!_"
             )
             return
-        jwt_token       = args[1]
+        l1_private_key  = args[1]
         account_address = args[2]
-        reply("⏳ Menghubungkan ke Paradex...")
+        reply("⏳ Menghubungkan ke Paradex dengan L1 key...")
         try:
-            _executor = ParadexExecutor(jwt_token, account_address)
+            _executor = ParadexExecutor(l1_private_key, account_address)
             if _executor.is_ready():
                 bal = _executor.get_balance()
                 eq  = bal.get("equity", 0)
@@ -333,14 +335,14 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
                     f"✅ *Paradex terhubung!*\n"
                     f"Account: `{account_address[:16]}...`\n"
                     f"Equity: *${eq:,.2f}*\n\n"
-                    f"Sekarang gunakan `/live on` untuk mulai live trading."
+                    f"Gunakan `/live on` untuk mulai live trading."
                 )
             else:
                 _executor = None
                 reply(
                     "❌ *Gagal terhubung ke Paradex.*\n"
-                    "Pastikan JWT token dan address benar.\n"
-                    "_JWT token expired? Generate yang baru dari Paradex app._"
+                    "Pastikan L1 private key dan address benar.\n"
+                    "_Cek Railway logs untuk detail error._"
                 )
         except Exception as e:
             _executor = None
