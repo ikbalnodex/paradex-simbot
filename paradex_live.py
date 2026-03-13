@@ -41,6 +41,45 @@ def is_live_active() -> bool:
     return live_settings["active"] and _executor is not None and _executor.is_ready()
 
 
+def get_health_positions() -> str:
+    """
+    Dipanggil dari /health di monk_bot_b.py.
+    Return string blok posisi Paradex live, atau "" kalau tidak ada.
+    """
+    if not is_live_active():
+        return ""
+    try:
+        _executor.sync_all()
+        eth_pos = _executor.get_live_position(MARKET_ETH)
+        btc_pos = _executor.get_live_position(MARKET_BTC)
+        if not eth_pos and not btc_pos:
+            return "\n_🔴 Live aktif tapi belum ada posisi di Paradex._\n"
+
+        def _line(p, label):
+            if not p:
+                return f"│ {label}: — tidak ada\n"
+            sign = "+" if p["unrealized_pnl"] >= 0 else ""
+            e    = "🟢" if p["unrealized_pnl"] >= 0 else "🔴"
+            return (
+                f"│ {label}: *{p['side']}* {abs(p['size'])} "
+                f"@ ${p['avg_entry']:,.2f} | UPnL: {e} *{sign}${p['unrealized_pnl']:,.2f}*"
+                + (f" | Liq: ${p['liq_price']:,.2f}" if p.get("liq_price") else "")
+                + "\n"
+            )
+
+        return (
+            f"\n*🔴 Paradex Live Positions:*\n"
+            f"┌─────────────────────\n"
+            + _line(eth_pos, "ETH")
+            + _line(btc_pos, "BTC")
+            + f"│ Margin: ${live_settings['margin_usd']:,.0f} | Lev: {live_settings['leverage']:.0f}x\n"
+            + f"└─────────────────────\n"
+        )
+    except Exception as e:
+        logger.warning(f"get_health_positions error: {e}")
+        return ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sizing helper
 # ─────────────────────────────────────────────────────────────────────────────
@@ -220,21 +259,58 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         elif not _executor.is_ready():
             reply("⚠️ *Paradex: Executor ada tapi koneksi gagal.*\nCoba `/pdx init` ulang.")
         else:
-            bal = _executor.get_balance()
+            bal      = _executor.get_balance()
+            margin   = live_settings["margin_usd"]
+            lev      = live_settings["leverage"]
+            otype    = live_settings["order_type"]
+            dryrun   = live_settings["dryrun"]
+            active   = live_settings["active"]
+            notional = margin * lev
+
             bal_str = (
-                f"│ Equity:          ${bal.get('equity', 0):,.2f}\n"
+                f"│ Equity:          *${bal.get('equity', 0):,.2f}*\n"
                 f"│ Free Collateral: ${bal.get('free_collateral', 0):,.2f}\n"
                 f"│ UPnL:            ${bal.get('unrealized_pnl', 0):+,.2f}\n"
             ) if bal else "│ Balance: (gagal load)\n"
-            live_str = "🟢 ON" if live_settings["active"] else "🔴 OFF"
+
+            # Sync dan tampilkan posisi aktif
+            _executor.sync_all()
+            eth_pos = _executor.get_live_position(MARKET_ETH)
+            btc_pos = _executor.get_live_position(MARKET_BTC)
+
+            def _pos_line(p, label):
+                if not p:
+                    return f"│ {label}: — tidak ada posisi\n"
+                sign = "+" if p["unrealized_pnl"] >= 0 else ""
+                return (
+                    f"│ {label}: *{p['side']}* {abs(p['size'])} "
+                    f"@ ${p['avg_entry']:,.2f} | UPnL: *{sign}${p['unrealized_pnl']:,.2f}*\n"
+                )
+
+            pos_block = (
+                f"│\n│ 📍 *Posisi Aktif:*\n"
+                + _pos_line(eth_pos, "ETH")
+                + _pos_line(btc_pos, "BTC")
+            ) if (eth_pos or btc_pos) else "│\n│ 📍 Posisi: — tidak ada\n"
+
+            live_str  = "🟢 AKTIF" if active else "🔴 OFF"
+            dr_str    = " 🧪 DRYRUN" if dryrun else ""
             reply(
-                f"✅ *Paradex: Terhubung*\n"
+                f"✅ *Paradex Dashboard*{dr_str}\n"
                 f"┌─────────────────────\n"
-                f"│ Account: `{_executor.account_address[:16]}...`\n"
+                f"│ Account: `{_executor.account_address[:18]}...`\n"
                 f"{bal_str}"
-                f"│ Live Trading: {live_str}\n"
+                f"│\n│ ⚙️ *Trading Settings:*\n"
+                f"│ Status:     {live_str}\n"
+                f"│ Margin:     *${margin:,.0f}* per pair\n"
+                f"│ Leverage:   *{lev:.0f}x*\n"
+                f"│ Notional:   ~${notional:,.0f} (margin × lev)\n"
+                f"│ Order type: {otype}\n"
+                f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
+                f"{pos_block}"
                 f"└─────────────────────\n"
-                f"_`/pdx balance` | `/pdx fills` | `/pdx cancel`_"
+                f"_`/pdx balance` | `/pdx fills` | `/pdx cancel` | `/pdx sync`_\n"
+                f"_`/live on|off` | `/live margin` | `/live lev` | `/live dryrun`_"
             )
 
     # ── Init ────────────────────────────────────────────────────
