@@ -126,7 +126,7 @@ class ParadexExecutor:
                 l1_address=self._l1_address,
                 l1_private_key=_int_from_hex(self._l1_key),  # HARUS integer
             )
-            self._run(self._pdx.init_account())
+            self._run(self._pdx.init_account(l1_address=self._l1_address))
             self._ready = True
             logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
         except Exception as e:
