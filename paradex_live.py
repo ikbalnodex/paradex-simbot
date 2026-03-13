@@ -317,35 +317,57 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
     elif sub == "init":
         if len(args) < 3:
             reply(
-                "⚠️ *Usage:* `/pdx init <l1_private_key> <l1_address>`\n\n"
-                "• `l1_private_key` — Ethereum private key kamu (dimulai `0x...`)\n"
-                "• `l1_address` — Ethereum wallet address kamu (dimulai `0x...`)\n\n"
-                "⚠️ _Kirim command ini hanya di chat pribadi yang aman!_"
+                "⚠️ *Usage:*\n\n"
+                "*Mode L2 (Paradex Key — Recommended):*\n"
+                "`/pdx init l2 <paradex_private_key> <l2_address>`\n\n"
+                "*Mode L1 (Ethereum Key):*\n"
+                "`/pdx init l1 <eth_private_key> <eth_address>`\n\n"
+                "📍 *Cara dapat L2 key:*\n"
+                "Paradex app → klik address kanan atas → *Export Private Key*\n\n"
+                "⚠️ _Kirim hanya di chat pribadi yang aman!_"
             )
             return
-        l1_private_key  = args[1]
-        account_address = args[2]
-        reply("⏳ Menghubungkan ke Paradex dengan L1 key...")
+
+        # Auto-detect: kalau args[1] adalah "l1" atau "l2", args[2] = key, args[3] = address
+        # Kalau tidak ada prefix, fallback ke L2
+        if args[1].lower() in ("l1", "l2"):
+            mode    = args[1].lower()
+            if len(args) < 4:
+                reply("⚠️ Kurang argumen. Contoh: `/pdx init l2 <key> <address>`")
+                return
+            key     = args[2]
+            address = args[3]
+        else:
+            # Tanpa prefix = L2
+            mode    = "l2"
+            key     = args[1]
+            address = args[2]
+
+        reply(f"⏳ Menghubungkan ke Paradex (mode {mode.upper()})...")
         try:
-            _executor = ParadexExecutor(l1_private_key, account_address)
-            if _executor.is_ready():
+            if mode == "l2":
+                new_exec = ParadexExecutor(l2_private_key=key, l2_address=address)
+            else:
+                new_exec = ParadexExecutor(l1_private_key=key, l1_address=address)
+
+            if new_exec.is_ready():
+                global _executor
+                _executor = new_exec
                 bal = _executor.get_balance()
                 eq  = bal.get("equity", 0)
                 reply(
-                    f"✅ *Paradex terhubung!*\n"
-                    f"Account: `{account_address[:16]}...`\n"
+                    f"✅ *Paradex terhubung! (Mode {mode.upper()})*\n"
+                    f"Account: `{address[:16]}...`\n"
                     f"Equity: *${eq:,.2f}*\n\n"
                     f"Gunakan `/live on` untuk mulai live trading."
                 )
             else:
-                _executor = None
                 reply(
                     "❌ *Gagal terhubung ke Paradex.*\n"
-                    "Pastikan L1 private key dan address benar.\n"
+                    "Pastikan key dan address benar.\n"
                     "_Cek Railway logs untuk detail error._"
                 )
         except Exception as e:
-            _executor = None
             reply(f"❌ *Error saat init:* `{e}`")
 
     # ── Balance ─────────────────────────────────────────────────
