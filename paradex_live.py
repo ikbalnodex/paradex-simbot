@@ -240,6 +240,8 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
     /pdx cancel                   — cancel semua order
     /pdx sync                     — refresh posisi
     """
+    global _executor  # ← harus di sini, paling atas fungsi
+
     def reply(msg):
         if send_reply_fn:
             send_reply_fn(msg, chat_id)
@@ -351,7 +353,6 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
                 new_exec = ParadexExecutor(l1_private_key=key, l1_address=address)
 
             if new_exec.is_ready():
-                global _executor
                 _executor = new_exec
                 bal = _executor.get_balance()
                 eq  = bal.get("equity", 0)
