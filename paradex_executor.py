@@ -98,15 +98,12 @@ class ParadexExecutor:
 
     def _run(self, coro):
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    return pool.submit(asyncio.run, coro).result(timeout=30)
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            return loop.run_until_complete(asyncio.wait_for(coro, timeout=30))
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(asyncio.wait_for(coro, timeout=30))
+            finally:
+                loop.close()
         except asyncio.TimeoutError:
             logger.warning("Paradex API timeout (30s)")
             return None
