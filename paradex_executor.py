@@ -1,6 +1,7 @@
 """
 paradex_executor.py — Paradex Live Trading Executor
-Uses paradex-py with L1 Ethereum key (most stable/documented approach).
+Uses paradex-py with L1 Ethereum key.
+l1_private_key MUST be passed as integer (int_from_hex).
 """
 import asyncio
 import logging
@@ -8,65 +9,97 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Import paradex-py ─────────────────────────────────────────────────────────
+PARADEX_PY_AVAILABLE = False
+_PROD_ENV = None
+
 try:
     import paradex_py
     from paradex_py import Paradex
     from paradex_py.environment import Environment
-    logger.info(f"paradex-py loaded, version: {getattr(paradex_py, '__version__', 'unknown')}")
+    import paradex_py.environment as _pe
+
+    # Log semua konstanta yang tersedia di module environment
+    _env_exports = [x for x in dir(_pe) if not x.startswith("_")]
+    logger.info(f"paradex-py v{getattr(paradex_py, '__version__', '?')} | environment exports: {_env_exports}")
+
+    # Coba semua nama yang mungkin untuk production environment
+    for _prod_name in ("PRODNET", "MAINNET", "PROD", "PRODUCTION"):
+        if hasattr(_pe, _prod_name):
+            _PROD_ENV = getattr(_pe, _prod_name)
+            logger.info(f"Using production env constant: {_prod_name} = {_PROD_ENV}")
+            break
+
+    if _PROD_ENV is None:
+        # Fallback: gunakan Environment enum jika ada value yg cocok
+        for _name in ("PRODNET", "MAINNET", "PROD"):
+            try:
+                _PROD_ENV = Environment[_name]
+                logger.info(f"Using Environment['{_name}'] = {_PROD_ENV}")
+                break
+            except (KeyError, AttributeError):
+                pass
+
+    if _PROD_ENV is None:
+        logger.warning("Cannot find production environment constant! Falling back to TESTNET.")
+        _PROD_ENV = getattr(_pe, "TESTNET", None) or Environment["TESTNET"]
+
     PARADEX_PY_AVAILABLE = True
+
 except ImportError as e:
-    PARADEX_PY_AVAILABLE = False
     logger.error(f"paradex-py not installed: {e}")
+
+
+def _int_from_hex(key: str) -> int:
+    """Convert hex private key string ke integer. Paradex-py butuh int."""
+    key = key.strip()
+    if not key.startswith("0x") and not key.startswith("0X"):
+        key = "0x" + key
+    return int(key, 16)
 
 
 class ParadexExecutor:
     """
     Executor untuk koneksi dan order ke Paradex.
 
-    Gunakan L1 Ethereum private key:
-        ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
+    ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
 
-    Cara dapat key:
-        MetaMask → Account Details → Export Private Key
+    l1_private_key = Ethereum private key dari MetaMask
+    l1_address     = Ethereum wallet address
     """
 
     def __init__(
         self,
         l1_private_key: str = None,
         l1_address:     str = None,
-        # L2 params diterima tapi diabaikan (fallback ke L1)
         l2_private_key: str = None,
         l2_address:     str = None,
     ):
-        # Gunakan L1 kalau ada, fallback ke L2 params sebagai L1
+        # Terima L1 atau L2 params (treat L2 params as L1 if no L1 given)
         self._l1_key     = (l1_private_key or l2_private_key or "").strip()
-        self._l1_address = (l1_address or l2_address or "").strip()
+        self._l1_address = (l1_address     or l2_address     or "").strip()
         self.account_address = self._l1_address
-
-        self._ready     = False
-        self._positions = {}
-        self._pdx       = None
+        self._ready          = False
+        self._positions      = {}
+        self._pdx            = None
 
         if not PARADEX_PY_AVAILABLE:
-            logger.error("paradex-py tidak tersedia — cek requirements.txt")
+            logger.error("paradex-py tidak tersedia")
             return
-
         if not self._l1_key or not self._l1_address:
-            logger.error("L1 private key dan address wajib diisi")
+            logger.error("Private key dan address wajib diisi")
             return
 
         self._init_client()
 
     # ─────────────────────────────────────────────────────────────
-    # Async runner — thread-safe
+    # Async runner
     # ─────────────────────────────────────────────────────────────
 
     def _run(self, coro):
-        """Jalankan coroutine dari sync context."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # Kita di dalam thread yang sudah ada event loop
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     return pool.submit(asyncio.run, coro).result(timeout=30)
@@ -75,7 +108,7 @@ class ParadexExecutor:
                 asyncio.set_event_loop(loop)
             return loop.run_until_complete(asyncio.wait_for(coro, timeout=30))
         except asyncio.TimeoutError:
-            logger.warning("Paradex API call timeout (30s)")
+            logger.warning("Paradex API timeout (30s)")
             return None
         except Exception as e:
             logger.warning(f"_run error: {e}")
@@ -87,13 +120,12 @@ class ParadexExecutor:
 
     def _init_client(self):
         try:
-            logger.info(f"Connecting to Paradex (L1 mode): {self._l1_address[:12]}...")
+            logger.info(f"Connecting to Paradex: {self._l1_address[:12]}... env={_PROD_ENV}")
             self._pdx = Paradex(
-                env=Environment.MAINNET,
+                env=_PROD_ENV,
                 l1_address=self._l1_address,
-                l1_private_key=self._l1_key,
+                l1_private_key=_int_from_hex(self._l1_key),  # HARUS integer
             )
-            # init_account() derive L2 key dari L1 dan generate JWT
             self._run(self._pdx.init_account())
             self._ready = True
             logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
@@ -105,24 +137,21 @@ class ParadexExecutor:
         return self._ready and self._pdx is not None
 
     def reconnect(self) -> bool:
-        """Re-init kalau JWT expired."""
         logger.info("Reconnecting to Paradex...")
         self._init_client()
         return self._ready
 
     # ─────────────────────────────────────────────────────────────
-    # Account & Balance
+    # Balance
     # ─────────────────────────────────────────────────────────────
 
     def get_balance(self) -> dict:
-        """Return free_collateral, total_collateral, equity, unrealized_pnl."""
         if not self.is_ready():
             return {}
         try:
             data = self._run(self._pdx.api_client.fetch_account_summary())
             if data is None:
                 return {}
-            # Handle berbagai format response
             if hasattr(data, "__dict__"):
                 data = vars(data)
             if isinstance(data, list) and data:
@@ -130,7 +159,6 @@ class ParadexExecutor:
                 if hasattr(data, "__dict__"):
                     data = vars(data)
             if not isinstance(data, dict):
-                logger.warning(f"get_balance unexpected type: {type(data)}")
                 return {}
             return {
                 "free_collateral":  float(data.get("free_collateral",  data.get("available_margin",  0)) or 0),
@@ -147,7 +175,6 @@ class ParadexExecutor:
     # ─────────────────────────────────────────────────────────────
 
     def sync_all(self):
-        """Refresh semua open positions dari Paradex."""
         if not self.is_ready():
             return
         try:
@@ -185,7 +212,6 @@ class ParadexExecutor:
             logger.warning(f"sync_all error: {e}")
 
     def get_live_position(self, market: str) -> Optional[dict]:
-        """Return posisi untuk market tertentu, None kalau tidak ada."""
         return self._positions.get(market)
 
     # ─────────────────────────────────────────────────────────────
@@ -201,11 +227,6 @@ class ParadexExecutor:
         price:       float = None,
         reduce_only: bool  = False,
     ) -> Optional[dict]:
-        """
-        Kirim order ke Paradex.
-        side: "BUY" atau "SELL"
-        Returns order dict atau None kalau gagal.
-        """
         if not self.is_ready():
             logger.warning("Paradex not ready — cannot place order")
             return None
@@ -220,24 +241,21 @@ class ParadexExecutor:
                 reduce_only=reduce_only,
             ))
             if result is None:
-                logger.warning(f"place_order returned None for {market}")
                 return None
             if hasattr(result, "__dict__"):
                 result = vars(result)
-            order_id = result.get("id", result.get("order_id", "?")) if isinstance(result, dict) else "?"
+            order_id = result.get("id", "?") if isinstance(result, dict) else "?"
             logger.info(f"✅ Order placed: {order_id}")
             return result if isinstance(result, dict) else {"id": str(result)}
         except Exception as e:
             logger.warning(f"place_order error: {e}")
-            # Coba reconnect kalau JWT expired
-            if "jwt" in str(e).lower() or "token" in str(e).lower() or "unauthorized" in str(e).lower():
-                logger.info("JWT might be expired, reconnecting...")
+            if any(k in str(e).lower() for k in ("jwt", "token", "unauthorized", "401")):
+                logger.info("JWT expired, reconnecting...")
                 if self.reconnect():
                     return self.place_order(market, side, size, order_type, price, reduce_only)
             return None
 
     def cancel_all_orders(self, market: str = None) -> bool:
-        """Cancel semua open orders."""
         if not self.is_ready():
             return False
         try:
@@ -245,29 +263,12 @@ class ParadexExecutor:
                 self._run(self._pdx.api_client.cancel_all_orders(market=market))
             else:
                 self._run(self._pdx.api_client.cancel_all_orders())
-            logger.info("All orders cancelled")
             return True
         except Exception as e:
             logger.warning(f"cancel_all_orders error: {e}")
             return False
 
-    def get_open_orders(self, market: str = None) -> list:
-        """Ambil daftar open orders."""
-        if not self.is_ready():
-            return []
-        try:
-            params = {"market": market} if market else {}
-            data   = self._run(self._pdx.api_client.fetch_orders(**params))
-            if not data:
-                return []
-            results = data if isinstance(data, list) else data.get("results", [])
-            return [vars(o) if hasattr(o, "__dict__") else o for o in results]
-        except Exception as e:
-            logger.warning(f"get_open_orders error: {e}")
-            return []
-
     def get_fills(self, market: str = None, limit: int = 10) -> list:
-        """Ambil history fills/trades terakhir."""
         if not self.is_ready():
             return []
         try:
@@ -278,19 +279,10 @@ class ParadexExecutor:
             if not data:
                 return []
             results = data if isinstance(data, list) else data.get("results", [])
-            out = []
-            for f in results:
-                if hasattr(f, "__dict__"):
-                    f = vars(f)
-                out.append(f)
-            return out
+            return [vars(f) if hasattr(f, "__dict__") else f for f in results]
         except Exception as e:
             logger.warning(f"get_fills error: {e}")
             return []
-
-    # ─────────────────────────────────────────────────────────────
-    # Close position helper
-    # ─────────────────────────────────────────────────────────────
 
     def close_position(
         self,
@@ -298,26 +290,18 @@ class ParadexExecutor:
         order_type: str   = "MARKET",
         price:      float = None,
     ) -> Optional[dict]:
-        """
-        Tutup posisi existing dengan reduce-only order.
-        Auto-sync kalau posisi belum ada di cache.
-        """
         pos = self.get_live_position(market)
         if not pos:
             self.sync_all()
             pos = self.get_live_position(market)
         if not pos:
-            logger.info(f"No open position found for {market} — skipping close")
+            logger.info(f"No open position for {market}")
             return None
-
-        size       = abs(pos["size"])
         close_side = "SELL" if pos["side"] == "LONG" else "BUY"
-        logger.info(f"Closing {market}: {close_side} {size} (was {pos['side']})")
-
         return self.place_order(
             market=market,
             side=close_side,
-            size=size,
+            size=abs(pos["size"]),
             order_type=order_type,
             price=price,
             reduce_only=True,
