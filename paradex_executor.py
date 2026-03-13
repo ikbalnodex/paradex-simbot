@@ -237,12 +237,10 @@ class ParadexExecutor:
         try:
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
             from paradex_py.common.order import Order, OrderSide, OrderType
-            logger.info(f'OrderSide values: {list(OrderSide)}')
-            logger.info(f'OrderType values: {list(OrderType)}')
             order_obj = Order(
                 market=market,
-                side=OrderSide[side.upper()],
-                type=OrderType[order_type.upper()],
+                side=OrderSide(side.upper()),
+                type=OrderType(order_type.upper()),
                 size=str(size),
                 reduce_only=reduce_only,
             )
