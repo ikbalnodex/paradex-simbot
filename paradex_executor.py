@@ -253,11 +253,16 @@ class ParadexExecutor:
             result = self._pdx.api_client.submit_order(order=order_obj, signer=self._pdx.account)
             if result is None:
                 return None
+            # Normalise: bisa dict, object, atau list
+            if isinstance(result, list):
+                result = result[0] if result else {}
             if hasattr(result, "__dict__"):
                 result = vars(result)
-            order_id = result.get("id", "?") if isinstance(result, dict) else "?"
+            if not isinstance(result, dict):
+                result = {"id": str(result)}
+            order_id = result.get("id", result.get("order_id", "?"))
             logger.info(f"✅ Order placed: {order_id}")
-            return result if isinstance(result, dict) else {"id": str(result)}
+            return result
 
         except Exception as e:
             logger.warning(f"place_order error: {e}")
