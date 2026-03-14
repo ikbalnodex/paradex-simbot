@@ -49,7 +49,25 @@ live_settings: dict = {
     "leverage":   10.0,
     "order_type": "MARKET",
     "dryrun":     False,
+    "mode":       "normal",  # "normal" = pair divergence | "x" = ikut arah ETH
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mode Trading
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# MODE NORMAL (default):
+#   S1: Long BTC / Short ETH  ← BTC outperform, fade ETH
+#   S2: Short BTC / Long ETH  ← ETH outperform, fade BTC
+#   → Strategi divergence: taruhan gap akan konvergen
+#
+# MODE X (momentum):
+#   S1: Long BTC / Long ETH   ← BTC kuat, ETH ikut momentum
+#   S2: Short BTC / Short ETH ← BTC lemah, ETH ikut turun
+#   → Strategi momentum: keduanya searah mengikuti tren BTC
+#
+# Ganti mode: /live mode normal | /live mode x
+# ─────────────────────────────────────────────────────────────────────────────
 
 _executor: Optional[ParadexExecutor] = None
 
@@ -157,6 +175,37 @@ def calc_order_preview(btc_price: float, eth_price: float) -> str:
 # Live open / close
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_order_sides(strategy: str) -> tuple:
+    """
+    Tentukan arah order ETH dan BTC berdasarkan strategi dan mode trading.
+
+    Return: (eth_side, btc_side, direction_label)
+
+    Mode NORMAL (divergence):
+        S1: BUY BTC  + SELL ETH  — fade ETH outperformance
+        S2: SELL BTC + BUY ETH   — fade BTC outperformance
+
+    Mode X (momentum):
+        S1: BUY BTC  + BUY ETH   — keduanya long ikut BTC
+        S2: SELL BTC + SELL ETH  — keduanya short ikut BTC
+    """
+    mode = live_settings.get("mode", "normal").lower()
+    s    = strategy.upper()
+
+    if mode == "x":
+        # Mode X: ETH ikut arah BTC
+        if s == "S1":
+            return "BUY",  "BUY",  "Long BTC + Long ETH (Mode X)"
+        else:
+            return "SELL", "SELL", "Short BTC + Short ETH (Mode X)"
+    else:
+        # Mode Normal: divergence / pairs trade
+        if s == "S1":
+            return "SELL", "BUY",  "Long BTC / Short ETH"
+        else:
+            return "BUY",  "SELL", "Long ETH / Short BTC"
+
+
 def live_open_or_sim(
     strategy:  str,
     btc_price: float,
@@ -175,14 +224,8 @@ def live_open_or_sim(
     otype    = live_settings["order_type"]
     dryrun   = live_settings["dryrun"]
 
-    if strategy.upper() == "S1":
-        eth_side  = "SELL"
-        btc_side  = "BUY"
-        direction = "Long BTC / Short ETH"
-    else:
-        eth_side  = "BUY"
-        btc_side  = "SELL"
-        direction = "Long ETH / Short BTC"
+    # Tentukan arah order sesuai mode (normal / x)
+    eth_side, btc_side, direction = _get_order_sides(strategy)
 
     if dryrun:
         logger.info(f"[DRYRUN] Would open {strategy}: ETH {eth_side} {eth_qty:.4f} | BTC {btc_side} {btc_qty:.5f}")
@@ -642,26 +685,33 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         connected = _executor is not None and _executor.is_ready()
         active    = live_settings["active"]
         notional  = margin * lev
+        mode_val  = live_settings.get("mode", "normal")
+        mode_str  = "🔵 NORMAL" if mode_val == "normal" else "🟣 MODE X"
+        mode_hint = (
+            "S1: Long BTC/Short ETH | S2: Short BTC/Long ETH"
+            if mode_val == "normal" else
+            "S1: Long BTC+ETH | S2: Short BTC+ETH"
+        )
         dr_str    = " 🧪 *DRYRUN*" if dryrun else ""
         reply(
             f"🔴 *Live Trading Settings*{dr_str}\n\n"
             f"┌─────────────────────\n"
             f"│ Status:     {'🟢 ON' if active else '🔴 OFF'}\n"
             f"│ Paradex:    {'✅ Connected' if connected else '❌ Not connected'}\n"
+            f"│ Mode:       *{mode_str}*\n"
+            f"│ {mode_hint}\n"
             f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
             f"│ Leverage:   *{lev:.0f}x*\n"
             f"│ Notional:   ~*${notional:,.2f}*/pair\n"
-            f"│ Margin req: ~*${notional/lev:,.2f}*/pair (= margin)\n"
             f"│ Total used: ~*${margin * 2:,.2f}* (2 pairs)\n"
             f"│ Order type: {otype}\n"
             f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
             f"└─────────────────────\n\n"
-            f"💡 _`/pdx preview <btc> <eth>` untuk lihat qty_\n"
-            f"💡 _`/pdx lev` untuk cek leverage aktif di exchange_\n\n"
+            f"💡 _`/pdx preview <btc> <eth>` untuk lihat qty_\n\n"
             f"*Commands:*\n"
             f"`/live on|off` | `/live margin <usd>`\n"
             f"`/live lev <n>` | `/live type market|limit`\n"
-            f"`/live dryrun on|off`"
+            f"`/live dryrun on|off` | `/live mode normal|x`"
         )
 
     elif sub == "on":
@@ -673,12 +723,15 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         live_settings["active"] = True
         notional = margin * lev
         dr_note  = "\n🧪 *Dryrun mode ON* — tidak ada order sungguhan." if dryrun else ""
+        mode_val = live_settings.get("mode", "normal")
+        mode_str = "🔵 NORMAL" if mode_val == "normal" else "🟣 MODE X"
         reply(
             f"🟢 *Live trading AKTIF!*{dr_note}\n\n"
+            f"Mode: *{mode_str}*\n"
             f"Margin: *${margin:,.2f}*/pair | Lev: *{lev:.0f}x*\n"
             f"Notional: ~*${notional:,.2f}*/pair\n"
             f"Total margin 2 pair: *${margin * 2:,.2f}*\n\n"
-            f"_Bot akan set leverage dan kirim order ke Paradex saat sinyal._\n\n"
+            f"_Bot akan kirim order ke Paradex saat sinyal._\n\n"
             f"⚠️ Pastikan balance ≥ ${margin * 2:,.2f}!"
         )
 
@@ -761,10 +814,53 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         else:
             reply("Gunakan `on` atau `off`.")
 
+    elif sub == "mode":
+        current_mode_val = live_settings.get("mode", "normal")
+        if len(args) < 2:
+            _mode_desc = (
+                "🔵 *NORMAL* — Pair divergence (Short satu, Long satunya)"
+                if current_mode_val == "normal" else
+                "🟣 *MODE X* — Momentum (keduanya searah)"
+            )
+            reply(
+                f"⚙️ *Mode Trading Saat Ini:* {_mode_desc}\n\n"
+                f"*Mode NORMAL (default):*\n"
+                f"│ S1: Long BTC + Short ETH\n"
+                f"│ S2: Short BTC + Long ETH\n"
+                f"│ → Strategi divergence, taruhan gap konvergen\n\n"
+                f"*Mode X (momentum):*\n"
+                f"│ S1: Long BTC + *Long ETH* ← ETH ikut BTC\n"
+                f"│ S2: Short BTC + *Short ETH* ← ETH ikut BTC\n"
+                f"│ → Strategi momentum, keduanya searah\n\n"
+                f"Ganti mode: `/live mode normal` atau `/live mode x`"
+            )
+            return
+        val = args[1].lower()
+        if val in ("normal", "n"):
+            live_settings["mode"] = "normal"
+            reply(
+                "🔵 *Mode NORMAL diaktifkan*\n\n"
+                "│ S1: Long BTC / Short ETH\n"
+                "│ S2: Short BTC / Long ETH\n\n"
+                "_Strategi pair divergence — gap akan konvergen._"
+            )
+        elif val in ("x", "momentum"):
+            live_settings["mode"] = "x"
+            reply(
+                "🟣 *Mode X diaktifkan*\n\n"
+                "│ S1: Long BTC + *Long ETH* (ikut BTC naik)\n"
+                "│ S2: Short BTC + *Short ETH* (ikut BTC turun)\n\n"
+                "_Strategi momentum — ETH mengikuti arah BTC._\n"
+                "⚠️ _Perhatikan: kedua posisi searah, risiko lebih tinggi._"
+            )
+        else:
+            reply("Gunakan `/live mode normal` atau `/live mode x`.")
+
     else:
         reply(
             "❓ Command tidak dikenal.\n\n"
             "*Usage:*\n`/live` — status\n`/live on|off` — toggle\n"
             "`/live margin <usd>` | `/live lev <n>`\n"
-            "`/live type market|limit` | `/live dryrun on|off`"
+            "`/live type market|limit` | `/live dryrun on|off`\n"
+            "`/live mode normal|x` — ganti mode trading"
         )
