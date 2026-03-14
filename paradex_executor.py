@@ -2,14 +2,10 @@
 paradex_executor.py — Paradex Live Trading Executor
 Uses paradex-py with L1 Ethereum key.
 l1_private_key MUST be passed as integer (int_from_hex).
-
-FIX: Order.__init__() parameter names disesuaikan dengan paradex-py terbaru:
-  - 'side'      → 'order_side'
-  - 'type'      → 'order_type'
-  - size/price  → Decimal (bukan str)
 """
 import asyncio
 import logging
+import traceback
 from decimal import Decimal
 from typing import Optional
 
@@ -54,7 +50,6 @@ except ImportError as e:
 
 
 def _int_from_hex(key: str) -> int:
-    """Convert hex private key string ke integer. Paradex-py butuh int."""
     key = key.strip()
     if not key.startswith("0x") and not key.startswith("0X"):
         key = "0x" + key
@@ -62,15 +57,6 @@ def _int_from_hex(key: str) -> int:
 
 
 class ParadexExecutor:
-    """
-    Executor untuk koneksi dan order ke Paradex.
-
-    ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
-
-    l1_private_key = Ethereum private key dari MetaMask
-    l1_address     = Ethereum wallet address
-    """
-
     def __init__(
         self,
         l1_private_key: str = None,
@@ -94,10 +80,6 @@ class ParadexExecutor:
 
         self._init_client()
 
-    # ─────────────────────────────────────────────────────────────
-    # Async runner
-    # ─────────────────────────────────────────────────────────────
-
     def _run(self, coro):
         try:
             loop = asyncio.new_event_loop()
@@ -113,17 +95,13 @@ class ParadexExecutor:
             logger.warning(f"_run error: {e}")
             return None
 
-    # ─────────────────────────────────────────────────────────────
-    # Init
-    # ─────────────────────────────────────────────────────────────
-
     def _init_client(self):
         try:
             logger.info(f"Connecting to Paradex: {self._l1_address[:12]}... env={_PROD_ENV}")
             self._pdx = Paradex(
                 env=_PROD_ENV,
                 l1_address=self._l1_address,
-                l1_private_key=_int_from_hex(self._l1_key),  # HARUS integer
+                l1_private_key=_int_from_hex(self._l1_key),
             )
             try:
                 self._run(self._pdx.init_account(l1_address=self._l1_address))
@@ -133,7 +111,7 @@ class ParadexExecutor:
                 else:
                     raise init_err
             self._ready = True
-            logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
+            logger.info(f"Paradex connected: {self._l1_address[:12]}...")
         except Exception as e:
             logger.warning(f"Paradex init failed: {e}")
             self._ready = False
@@ -235,42 +213,51 @@ class ParadexExecutor:
         if not self.is_ready():
             logger.warning("Paradex not ready — cannot place order")
             return None
-        try:
-            logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
 
-            # ── FIX: import Decimal dan gunakan nama parameter yang benar ──
+        logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
+
+        # ── Step 1: Build Order object ────────────────────────────
+        try:
             from paradex_py.common.order import Order, OrderSide, OrderType
 
             order_obj = Order(
                 market=market,
-                order_type=OrderType(order_type.upper()),        # ← 'order_type' (bukan 'type')
-                order_side=OrderSide(side.upper()),              # ← 'order_side' (bukan 'side')
-                size=Decimal(str(size)),                         # ← Decimal (bukan str)
-                limit_price=Decimal(str(price)) if price is not None else Decimal("0"),  # ← 'limit_price'
+                order_type=OrderType(order_type.upper()),
+                order_side=OrderSide(side.upper()),
+                size=Decimal(str(size)),
+                limit_price=Decimal(str(price)) if price is not None else Decimal("0"),
                 reduce_only=reduce_only,
             )
-
-            result = self._pdx.api_client.submit_order(order=order_obj, signer=self._pdx.account)
-            if result is None:
-                return None
-            # Normalise: bisa dict, object, atau list
-            if isinstance(result, list):
-                result = result[0] if result else {}
-            if hasattr(result, "__dict__"):
-                result = vars(result)
-            if not isinstance(result, dict):
-                result = {"id": str(result)}
-            order_id = result.get("id", result.get("order_id", "?"))
-            logger.info(f"✅ Order placed: {order_id}")
-            return result
-
+            logger.info(f"Order object OK: {order_obj}")
         except Exception as e:
-            logger.warning(f"place_order error: {e}")
+            logger.warning(f"place_order [build] error: {e}\n{traceback.format_exc()}")
+            return None
+
+        # ── Step 2: Submit ────────────────────────────────────────
+        try:
+            result = self._pdx.api_client.submit_order(order=order_obj, signer=self._pdx.account)
+            logger.info(f"submit_order raw => type={type(result).__name__} | val={result}")
+        except Exception as e:
+            logger.warning(f"place_order [submit] error: {e}\n{traceback.format_exc()}")
             if any(k in str(e).lower() for k in ("jwt", "token", "unauthorized", "401")):
                 logger.info("JWT expired, reconnecting...")
                 if self.reconnect():
                     return self.place_order(market, side, size, order_type, price, reduce_only)
             return None
+
+        # ── Step 3: Normalise result ──────────────────────────────
+        if result is None:
+            return None
+        if isinstance(result, list):
+            result = result[0] if result else {}
+        if hasattr(result, "__dict__"):
+            result = vars(result)
+        if not isinstance(result, dict):
+            result = {"id": str(result)}
+
+        order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
+        logger.info(f"Order placed OK: {order_id}")
+        return result
 
     def cancel_all_orders(self, market: str = None) -> bool:
         if not self.is_ready():
