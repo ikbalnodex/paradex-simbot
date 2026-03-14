@@ -2,9 +2,15 @@
 paradex_executor.py — Paradex Live Trading Executor
 Uses paradex-py with L1 Ethereum key.
 l1_private_key MUST be passed as integer (int_from_hex).
+
+FIX: Order.__init__() parameter names disesuaikan dengan paradex-py terbaru:
+  - 'side'      → 'order_side'
+  - 'type'      → 'order_type'
+  - size/price  → Decimal (bukan str)
 """
 import asyncio
 import logging
+from decimal import Decimal
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -19,11 +25,9 @@ try:
     from paradex_py.environment import Environment
     import paradex_py.environment as _pe
 
-    # Log semua konstanta yang tersedia di module environment
     _env_exports = [x for x in dir(_pe) if not x.startswith("_")]
     logger.info(f"paradex-py v{getattr(paradex_py, '__version__', '?')} | environment exports: {_env_exports}")
 
-    # Coba semua nama yang mungkin untuk production environment
     for _prod_name in ("PRODNET", "MAINNET", "PROD", "PRODUCTION"):
         if hasattr(_pe, _prod_name):
             _PROD_ENV = getattr(_pe, _prod_name)
@@ -31,7 +35,6 @@ try:
             break
 
     if _PROD_ENV is None:
-        # Fallback: gunakan Environment enum jika ada value yg cocok
         for _name in ("PRODNET", "MAINNET", "PROD"):
             try:
                 _PROD_ENV = Environment[_name]
@@ -75,7 +78,6 @@ class ParadexExecutor:
         l2_private_key: str = None,
         l2_address:     str = None,
     ):
-        # Terima L1 atau L2 params (treat L2 params as L1 if no L1 given)
         self._l1_key     = (l1_private_key or l2_private_key or "").strip()
         self._l1_address = (l1_address     or l2_address     or "").strip()
         self.account_address = self._l1_address
@@ -126,7 +128,6 @@ class ParadexExecutor:
             try:
                 self._run(self._pdx.init_account(l1_address=self._l1_address))
             except Exception as init_err:
-                # "already initialized" = account sudah ada, bukan error
                 if "already initialized" in str(init_err).lower():
                     logger.info("Account already initialized — OK, continuing")
                 else:
@@ -236,18 +237,19 @@ class ParadexExecutor:
             return None
         try:
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
+
+            # ── FIX: import Decimal dan gunakan nama parameter yang benar ──
             from paradex_py.common.order import Order, OrderSide, OrderType
-            import inspect
-            logger.info(f'Order signature: {inspect.signature(Order.__init__)}')
+
             order_obj = Order(
                 market=market,
-                side=OrderSide(side.upper()),
-                type=OrderType(order_type.upper()),
-                size=str(size),
+                order_type=OrderType(order_type.upper()),        # ← 'order_type' (bukan 'type')
+                order_side=OrderSide(side.upper()),              # ← 'order_side' (bukan 'side')
+                size=Decimal(str(size)),                         # ← Decimal (bukan str)
+                limit_price=Decimal(str(price)) if price is not None else Decimal("0"),  # ← 'limit_price'
                 reduce_only=reduce_only,
             )
-            if price is not None:
-                order_obj.price = str(price)
+
             result = self._pdx.api_client.submit_order(order=order_obj, signer=self._pdx.account)
             if result is None:
                 return None
@@ -256,6 +258,7 @@ class ParadexExecutor:
             order_id = result.get("id", "?") if isinstance(result, dict) else "?"
             logger.info(f"✅ Order placed: {order_id}")
             return result if isinstance(result, dict) else {"id": str(result)}
+
         except Exception as e:
             logger.warning(f"place_order error: {e}")
             if any(k in str(e).lower() for k in ("jwt", "token", "unauthorized", "401")):
