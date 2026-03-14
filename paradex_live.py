@@ -247,12 +247,49 @@ def live_open_or_sim(
     btc_lev_ok = _executor.set_leverage(MARKET_BTC, lev)
     lev_status = "✅" if (eth_lev_ok and btc_lev_ok) else "⚠️ gagal set lev"
 
-    # ── Kirim order ────────────────────────────────────────────────────────
-    eth_result = _executor.place_order(MARKET_ETH, eth_side, eth_qty, order_type=otype)
-    btc_result = _executor.place_order(MARKET_BTC, btc_side, btc_qty, order_type=otype)
+    # ── Cek free collateral sebelum order ──────────────────────────────────
+    # Total margin yang dibutuhkan = margin × 2 (ETH + BTC)
+    # Tambah buffer 10% untuk fee dan slippage
+    total_margin_needed = margin * 2 * 1.10
+    bal = _executor.get_balance()
+    free_collateral = bal.get("free_collateral", 0) if bal else 0
 
-    eth_ok = eth_result is not None
-    btc_ok = btc_result is not None
+    if free_collateral < total_margin_needed:
+        logger.warning(
+            f"Margin tidak cukup: free=${free_collateral:.2f} | "
+            f"dibutuhkan=${total_margin_needed:.2f} (margin ${margin}×2 + 10% buffer)"
+        )
+        return (
+            f"\n❌ *[LIVE] Order Dibatalkan — Margin Tidak Cukup*\n"
+            f"┌─────────────────────\n"
+            f"│ Free collateral: *${free_collateral:,.2f}*\n"
+            f"│ Dibutuhkan:      *${total_margin_needed:,.2f}*\n"
+            f"│ (margin ${margin:,.2f}/pair × 2 + 10% buffer)\n"
+            f"└─────────────────────\n"
+            f"_Kurangi margin dengan `/live margin <usd>` atau deposit lebih._\n"
+        )
+
+
+    logger.info(f"Margin check OK: free=${free_collateral:.2f} ≥ needed=${total_margin_needed:.2f}")
+
+    # ── Kirim ETH order dulu, tunggu konfirmasi, baru BTC ─────────────────
+    eth_result = _executor.place_order(MARKET_ETH, eth_side, eth_qty, order_type=otype)
+    eth_ok     = eth_result is not None
+
+    if not eth_ok:
+        logger.warning("ETH order gagal — BTC order dibatalkan untuk menghindari posisi tidak seimbang")
+        return (
+            f"\n❌ *[LIVE] ETH Order Gagal — BTC Dibatalkan*\n"
+            f"│ ETH: ❌ FAILED\n"
+            f"│ BTC: ⏸️ Dibatalkan (menunggu ETH)\n"
+            f"_Cek log untuk detail error._\n"
+        )
+
+
+    # ETH berhasil, lanjut BTC
+    btc_result = _executor.place_order(MARKET_BTC, btc_side, btc_qty, order_type=otype)
+    btc_ok     = btc_result is not None
+
     eth_id = eth_result.get("id", "?") if eth_result else "FAILED"
     btc_id = btc_result.get("id", "?") if btc_result else "FAILED"
 
