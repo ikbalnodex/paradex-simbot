@@ -415,8 +415,12 @@ def process_commands() -> None:
             "/velocity":  lambda: handle_velocity_command(chat_id),
             "/exitconf":  lambda: handle_exitconf_command(args, chat_id),
             # Paradex Live Trading
-            "/pdx":       lambda: handle_pdx_command(args, chat_id, send_reply),
+            # /pdx close dihandle di sini supaya bisa reset state bot sekaligus
+            "/pdx":       lambda: handle_pdx_close_with_reset(args, chat_id) if (args and args[0].lower() == "close") else handle_pdx_command(args, chat_id, send_reply),
             "/live":      lambda: handle_live_command(args, chat_id, send_reply),
+            # Command darurat reset state bot
+            "/forceclose": lambda: handle_forceclose_command(chat_id),
+            "/resetstate": lambda: handle_forceclose_command(chat_id),
         }
         if command in dispatch:
             dispatch[command]()
@@ -2451,6 +2455,80 @@ def handle_simstats_command(reply_chat):
         f"├─────────────────────\n│ *5 Trade Terakhir:*\n{recent_lines}└─────────────────────\n",
         reply_chat,
     )
+
+def handle_pdx_close_with_reset(args: list, chat_id: str):
+    """
+    /pdx close — tutup semua posisi Paradex DAN reset state bot ke SCAN.
+    Ini penting supaya bot bisa scan sinyal baru setelah posisi ditutup manual.
+    """
+    from paradex_live import live_close_all_command
+
+    # Step 1: Tutup posisi di Paradex
+    close_msg = live_close_all_command()
+    send_reply(close_msg, chat_id)
+
+    # Step 2: Reset state bot ke SCAN
+    was_tracking = current_mode == Mode.TRACK
+    was_strategy = active_strategy.value if active_strategy else None
+    reset_to_scan()
+
+    # Step 3: Bersihkan pos_data
+    for k in pos_data:
+        pos_data[k] = None
+    clear_pos_data_redis()
+
+    # Step 4: Bersihkan sim_trade jika aktif
+    if sim_trade.get("active"):
+        sim_trade.update({
+            "active": False, "strategy": None, "eth_entry": None, "btc_entry": None,
+            "eth_qty": None, "btc_qty": None, "eth_notional": None, "btc_notional": None,
+            "eth_margin": None, "btc_margin": None, "fee_open": None, "opened_at": None,
+        })
+
+    if was_tracking:
+        send_reply(
+            f"🔄 *State bot direset ke SCAN.*\n"
+            f"Strategi {was_strategy} dihapus dari memory.\n"
+            f"Bot siap mendeteksi sinyal baru.",
+            chat_id,
+        )
+        logger.info(f"State bot direset ke SCAN setelah /pdx close (was {was_strategy})")
+    else:
+        send_reply("ℹ️ Bot sudah dalam mode SCAN — tidak ada state yang perlu direset.", chat_id)
+
+
+def handle_forceclose_command(chat_id: str):
+    """
+    /forceclose atau /resetstate — reset state bot ke SCAN tanpa menutup posisi Paradex.
+    Berguna jika posisi sudah ditutup manual di UI tapi state bot masih TRACK.
+    """
+    was_mode     = current_mode.value
+    was_strategy = active_strategy.value if active_strategy else None
+
+    reset_to_scan()
+    for k in pos_data:
+        pos_data[k] = None
+    clear_pos_data_redis()
+
+    if sim_trade.get("active"):
+        sim_trade.update({
+            "active": False, "strategy": None, "eth_entry": None, "btc_entry": None,
+            "eth_qty": None, "btc_qty": None, "eth_notional": None, "btc_notional": None,
+            "eth_margin": None, "btc_margin": None, "fee_open": None, "opened_at": None,
+        })
+
+    logger.info(f"State bot di-force reset: {was_mode} {was_strategy} → SCAN")
+    send_reply(
+        f"🔄 *State Bot Direset ke SCAN*\n\n"
+        f"Mode sebelumnya: *{was_mode}*\n"
+        f"Strategi: *{was_strategy or '-'}*\n\n"
+        f"✅ Bot sekarang dalam mode SCAN dan siap mendeteksi sinyal baru.\n\n"
+        f"_⚠️ Catatan: command ini hanya mereset state bot, tidak menutup posisi di Paradex._\n"
+        f"_Gunakan `/pdx close` untuk menutup posisi sekaligus._",
+        chat_id,
+    )
+
+
 
 def handle_help_command(reply_chat):
     enabled = settings["sim_enabled"]; n_trade = len(sim_trade["history"]); active = sim_trade["active"]
