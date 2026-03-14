@@ -1,21 +1,11 @@
 """
 paradex_executor.py — Paradex Live Trading Executor
-Uses paradex-py with L1 Ethereum key.
-l1_private_key MUST be passed as integer (int_from_hex).
 
-ROOT CAUSE FIX:
-    submit_order() di paradex-py mengkonversi Order → dict, lalu pass dict
-    ke sign_order() yang expect object dengan .id → AttributeError.
-
-    Workaround:
-    1. sign Order object langsung via account.sign_order(order_obj)
-       → returns [r, s] signature array
-    2. Build payload manual dengan signature + signature_timestamp (ms)
-    3. POST ke /v1/orders via requests
-
-    Size rounding:
-    - ETH: step 0.0001  → round to 4 decimal
-    - BTC: step 0.00001 → round to 5 decimal
+FIXES:
+1. set_leverage → POST /account/leverage (endpoint benar Paradex)
+2. Size rounding per market step
+3. Signature [r,s] → hex + signature_timestamp ms
+4. close_all_positions() untuk close via command
 """
 import asyncio
 import logging
@@ -27,7 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ── Market size steps ─────────────────────────────────────────────────────────
-# Paradex minimum size step per market
+# Minimum size increment per market di Paradex
 _SIZE_STEP = {
     "ETH-USD-PERP": Decimal("0.0001"),
     "BTC-USD-PERP": Decimal("0.00001"),
@@ -36,7 +26,6 @@ _DEFAULT_STEP = Decimal("0.0001")
 
 
 def _round_size(size: float, market: str) -> Decimal:
-    """Round size ke step yang valid untuk market."""
     step = _SIZE_STEP.get(market, _DEFAULT_STEP)
     d    = Decimal(str(size))
     return (d / step).to_integral_value(rounding=ROUND_DOWN) * step
@@ -91,7 +80,6 @@ def _to_dict(obj):
     if obj is None:
         return None
     if isinstance(obj, list) and obj and isinstance(obj[0], dict):
-        # list of dicts = list of results, bukan signature
         obj = obj[0]
     if hasattr(obj, "__dict__"):
         obj = vars(obj)
@@ -125,10 +113,6 @@ class ParadexExecutor:
 
         self._init_client()
 
-    # ─────────────────────────────────────────────────────────────
-    # Async runner
-    # ─────────────────────────────────────────────────────────────
-
     def _run(self, coro):
         try:
             loop = asyncio.new_event_loop()
@@ -143,10 +127,6 @@ class ParadexExecutor:
         except Exception as e:
             logger.warning(f"_run error: {e}")
             return None
-
-    # ─────────────────────────────────────────────────────────────
-    # Init
-    # ─────────────────────────────────────────────────────────────
 
     def _init_client(self):
         try:
@@ -164,14 +144,13 @@ class ParadexExecutor:
                 else:
                     raise init_err
 
-            # Deteksi base URL
             try:
                 url = str(self._pdx.api_client.base_url).rstrip("/")
                 if url.startswith("http"):
                     self._base_url = url
-                logger.info(f"Base URL: {self._base_url}")
             except Exception:
-                logger.info(f"Base URL fallback: {self._base_url}")
+                pass
+            logger.info(f"Base URL: {self._base_url}")
 
             self._ready = True
             logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
@@ -186,10 +165,6 @@ class ParadexExecutor:
         logger.info("Reconnecting to Paradex...")
         self._init_client()
         return self._ready
-
-    # ─────────────────────────────────────────────────────────────
-    # JWT
-    # ─────────────────────────────────────────────────────────────
 
     def _get_jwt(self) -> Optional[str]:
         try:
@@ -208,6 +183,102 @@ class ParadexExecutor:
         except Exception as e:
             logger.warning(f"_get_jwt error: {e}")
             return None
+
+    def _request(self, method: str, path: str, body: dict = None) -> Optional[dict]:
+        """Authenticated REST request ke Paradex."""
+        import requests
+        jwt = self._get_jwt()
+        if not jwt:
+            logger.warning("_request: tidak bisa ambil JWT")
+            return None
+        url     = f"{self._base_url}{path}"
+        headers = {
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {jwt}",
+        }
+        try:
+            if method.upper() == "POST":
+                resp = requests.post(url, json=body, headers=headers, timeout=15)
+            elif method.upper() == "PUT":
+                resp = requests.put(url, json=body, headers=headers, timeout=15)
+            elif method.upper() == "DELETE":
+                resp = requests.delete(url, headers=headers, timeout=15)
+            else:
+                resp = requests.get(url, headers=headers, timeout=15)
+
+            logger.info(f"{method.upper()} {path} → {resp.status_code}: {resp.text[:300]}")
+
+            if resp.status_code in (200, 201):
+                return resp.json() if resp.text.strip() else {"ok": True}
+            elif resp.status_code == 204:
+                return {"ok": True}
+            elif resp.status_code == 401:
+                logger.info("JWT expired, reconnecting...")
+                if self.reconnect():
+                    return self._request(method, path, body)
+            else:
+                logger.warning(f"HTTP {resp.status_code}: {resp.text}")
+            return None
+        except Exception as e:
+            logger.warning(f"_request error: {e}")
+            return None
+
+    # ─────────────────────────────────────────────────────────────
+    # Leverage  ← FIX: endpoint /account/leverage
+    # ─────────────────────────────────────────────────────────────
+
+    def set_leverage(self, market: str, leverage: float) -> bool:
+        """
+        Set leverage untuk market tertentu.
+        Paradex endpoint: POST /account/leverage
+        Body: {"market": "ETH-USD-PERP", "leverage": 40}
+        """
+        if not self.is_ready():
+            return False
+
+        lev_int = int(leverage)
+        logger.info(f"Setting leverage {market} → {lev_int}x")
+
+        # Coba via paradex-py method dulu
+        try:
+            for fn_name in ("update_leverage", "set_leverage", "change_leverage"):
+                fn = getattr(self._pdx.api_client, fn_name, None)
+                if fn:
+                    fn(market=market, leverage=lev_int)
+                    logger.info(f"✅ Leverage set via api_client.{fn_name}(): {market} {lev_int}x")
+                    return True
+        except Exception as e:
+            logger.info(f"api_client leverage method gagal: {e} — trying REST")
+
+        # Paradex REST: POST /account/leverage
+        result = self._request("POST", "/account/leverage", {
+            "market":   market,
+            "leverage": lev_int,
+        })
+        if result is not None:
+            logger.info(f"✅ Leverage set via /account/leverage: {market} {lev_int}x")
+            return True
+
+        # Fallback: PUT /account/leverage
+        result = self._request("PUT", "/account/leverage", {
+            "market":   market,
+            "leverage": lev_int,
+        })
+        if result is not None:
+            logger.info(f"✅ Leverage set via PUT /account/leverage: {market} {lev_int}x")
+            return True
+
+        logger.warning(
+            f"set_leverage gagal: {market} {lev_int}x — "
+            f"order tetap dikirim tapi leverage pakai default exchange"
+        )
+        return False
+
+    def set_leverage_all(self, leverage: float, markets: list = None) -> None:
+        if markets is None:
+            markets = list(_SIZE_STEP.keys())
+        for m in markets:
+            self.set_leverage(m, leverage)
 
     # ─────────────────────────────────────────────────────────────
     # Balance
@@ -268,6 +339,9 @@ class ParadexExecutor:
     def get_live_position(self, market: str) -> Optional[dict]:
         return self._positions.get(market)
 
+    def get_all_positions(self) -> dict:
+        return dict(self._positions)
+
     # ─────────────────────────────────────────────────────────────
     # Orders
     # ─────────────────────────────────────────────────────────────
@@ -285,7 +359,6 @@ class ParadexExecutor:
             logger.warning("Paradex not ready — cannot place order")
             return None
 
-        # Round size ke step yang valid
         size_dec = _round_size(size, market)
         logger.info(f"Placing order: {side} {size_dec} {market} @ {order_type} (raw={size})")
 
@@ -311,17 +384,14 @@ class ParadexExecutor:
             return None
 
         # ── Step 2: Sign Order object langsung ───────────────────
-        # sign_order() returns [r, s] list — bukan dict
         try:
             sig_timestamp_ms = int(time.time() * 1000)
-            # Inject timestamp ke order supaya ikut di-sign
             if hasattr(order_obj, "signature_timestamp"):
                 order_obj.signature_timestamp = sig_timestamp_ms
 
             signature = self._pdx.account.sign_order(order_obj)
-            logger.info(f"sign_order OK: type={type(signature).__name__} | {signature}")
+            logger.info(f"sign_order OK: {signature}")
 
-            # signature = [r, s] list of ints/strings
             if isinstance(signature, (list, tuple)) and len(signature) >= 2:
                 sig_str = f"0x{int(signature[0]):064x}{int(signature[1]):064x}"
             elif isinstance(signature, str):
@@ -329,19 +399,12 @@ class ParadexExecutor:
             else:
                 sig_str = str(signature)
 
-            logger.info(f"Signature hex: {sig_str[:32]}...")
+            logger.info(f"Signature: {sig_str[:34]}...")
         except Exception as e:
             logger.warning(f"place_order [sign] error: {e}\n{traceback.format_exc()}")
             return None
 
-        # ── Step 3: POST payload dengan signature ─────────────────
-        import requests
-
-        jwt = self._get_jwt()
-        if not jwt:
-            logger.warning("place_order: tidak bisa ambil JWT")
-            return None
-
+        # ── Step 3: POST ke /orders ───────────────────────────────
         payload = {
             "market":              market,
             "side":                side.upper(),
@@ -355,45 +418,18 @@ class ParadexExecutor:
         if price is not None:
             payload["price"] = str(price)
 
-        # Ambil client_id dari order_obj jika ada
         client_id = getattr(order_obj, "client_id", None)
         if client_id:
             payload["client_id"] = str(client_id)
 
-        logger.info(f"POST payload: {payload}")
-
-        url = f"{self._base_url}/orders"
-        headers = {
-            "Content-Type":  "application/json",
-            "Authorization": f"Bearer {jwt}",
-        }
-
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=15)
-            logger.info(f"POST {resp.status_code}: {resp.text[:400]}")
-
-            if resp.status_code in (200, 201):
-                result = resp.json()
-                result = _to_dict(result)
-                order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
-                logger.info(f"✅ Order placed: {order_id}")
-                return result
-            elif resp.status_code == 401:
-                logger.info("JWT expired, reconnecting...")
-                if self.reconnect():
-                    return self.place_order(market, side, size, order_type, price, reduce_only)
-                return None
-            else:
-                logger.warning(f"place_order HTTP {resp.status_code}: {resp.text}")
-                return None
-
-        except Exception as e:
-            logger.warning(f"place_order [POST] error: {e}\n{traceback.format_exc()}")
+        result = self._request("POST", "/orders", payload)
+        if result is None:
             return None
 
-    # ─────────────────────────────────────────────────────────────
-    # Cancel / Fills / Close
-    # ─────────────────────────────────────────────────────────────
+        result   = _to_dict(result)
+        order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
+        logger.info(f"✅ Order placed: {order_id}")
+        return result
 
     def cancel_all_orders(self, market: str = None) -> bool:
         if not self.is_ready():
@@ -430,6 +466,7 @@ class ParadexExecutor:
         order_type: str   = "MARKET",
         price:      float = None,
     ) -> Optional[dict]:
+        """Close satu posisi spesifik."""
         pos = self.get_live_position(market)
         if not pos:
             self.sync_all()
@@ -446,3 +483,17 @@ class ParadexExecutor:
             price=price,
             reduce_only=True,
         )
+
+    def close_all_positions(self, order_type: str = "MARKET") -> dict:
+        """
+        Close semua posisi yang terbuka.
+        Return: {"ETH-USD-PERP": result_or_none, "BTC-USD-PERP": result_or_none, ...}
+        """
+        self.sync_all()
+        results = {}
+        for market, pos in list(self._positions.items()):
+            logger.info(f"Closing position: {market} {pos['side']} {pos['size']}")
+            result = self.close_position(market, order_type=order_type)
+            results[market] = result
+            logger.info(f"Close {market}: {'✅' if result else '❌'}")
+        return results
