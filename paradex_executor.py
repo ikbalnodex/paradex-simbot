@@ -2,10 +2,18 @@
 paradex_executor.py — Paradex Live Trading Executor
 Uses paradex-py with L1 Ethereum key.
 l1_private_key MUST be passed as integer (int_from_hex).
+
+ROOT CAUSE FIX:
+    submit_order() di paradex-py mengkonversi Order → dict, lalu
+    pass dict itu ke sign_order() yang expect object dengan .id → AttributeError.
+
+    Workaround: sign Order object LANGSUNG via account.sign_order(order),
+    lalu POST payload ke /v1/orders manual via requests.
 """
 import asyncio
 import logging
 import traceback
+import time
 from decimal import Decimal
 from typing import Optional
 
@@ -22,12 +30,12 @@ try:
     import paradex_py.environment as _pe
 
     _env_exports = [x for x in dir(_pe) if not x.startswith("_")]
-    logger.info(f"paradex-py v{getattr(paradex_py, '__version__', '?')} | environment exports: {_env_exports}")
+    logger.info(f"paradex-py v{getattr(paradex_py, '__version__', '?')} | env exports: {_env_exports}")
 
     for _prod_name in ("PRODNET", "MAINNET", "PROD", "PRODUCTION"):
         if hasattr(_pe, _prod_name):
             _PROD_ENV = getattr(_pe, _prod_name)
-            logger.info(f"Using production env constant: {_prod_name} = {_PROD_ENV}")
+            logger.info(f"Using production env: {_prod_name} = {_PROD_ENV}")
             break
 
     if _PROD_ENV is None:
@@ -40,7 +48,7 @@ try:
                 pass
 
     if _PROD_ENV is None:
-        logger.warning("Cannot find production environment constant! Falling back to TESTNET.")
+        logger.warning("Cannot find production env! Falling back to TESTNET.")
         _PROD_ENV = getattr(_pe, "TESTNET", None) or Environment["TESTNET"]
 
     PARADEX_PY_AVAILABLE = True
@@ -50,13 +58,36 @@ except ImportError as e:
 
 
 def _int_from_hex(key: str) -> int:
+    """Convert hex private key string ke integer."""
     key = key.strip()
     if not key.startswith("0x") and not key.startswith("0X"):
         key = "0x" + key
     return int(key, 16)
 
 
+def _to_dict(obj):
+    """Normalise API response ke dict."""
+    if obj is None:
+        return None
+    if isinstance(obj, list):
+        obj = obj[0] if obj else {}
+    if hasattr(obj, "__dict__"):
+        obj = vars(obj)
+    if not isinstance(obj, dict):
+        obj = {"id": str(obj)}
+    return obj
+
+
 class ParadexExecutor:
+    """
+    Executor untuk koneksi dan order ke Paradex.
+
+    ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
+
+    l1_private_key = Ethereum private key dari MetaMask
+    l1_address     = Ethereum wallet address
+    """
+
     def __init__(
         self,
         l1_private_key: str = None,
@@ -70,6 +101,7 @@ class ParadexExecutor:
         self._ready          = False
         self._positions      = {}
         self._pdx            = None
+        self._base_url       = None  # set saat init
 
         if not PARADEX_PY_AVAILABLE:
             logger.error("paradex-py tidak tersedia")
@@ -79,6 +111,10 @@ class ParadexExecutor:
             return
 
         self._init_client()
+
+    # ─────────────────────────────────────────────────────────────
+    # Async runner
+    # ─────────────────────────────────────────────────────────────
 
     def _run(self, coro):
         try:
@@ -95,6 +131,10 @@ class ParadexExecutor:
             logger.warning(f"_run error: {e}")
             return None
 
+    # ─────────────────────────────────────────────────────────────
+    # Init
+    # ─────────────────────────────────────────────────────────────
+
     def _init_client(self):
         try:
             logger.info(f"Connecting to Paradex: {self._l1_address[:12]}... env={_PROD_ENV}")
@@ -107,13 +147,22 @@ class ParadexExecutor:
                 self._run(self._pdx.init_account(l1_address=self._l1_address))
             except Exception as init_err:
                 if "already initialized" in str(init_err).lower():
-                    logger.info("Account already initialized — OK, continuing")
+                    logger.info("Account already initialized — OK")
                 else:
                     raise init_err
+
+            # Simpan base URL untuk POST manual
+            try:
+                self._base_url = self._pdx.api_client.base_url.rstrip("/")
+                logger.info(f"Base URL: {self._base_url}")
+            except Exception:
+                self._base_url = "https://api.prod.paradex.trade/v1"
+                logger.info(f"Base URL fallback: {self._base_url}")
+
             self._ready = True
-            logger.info(f"Paradex connected: {self._l1_address[:12]}...")
+            logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
         except Exception as e:
-            logger.warning(f"Paradex init failed: {e}")
+            logger.warning(f"Paradex init failed: {e}\n{traceback.format_exc()}")
             self._ready = False
 
     def is_ready(self) -> bool:
@@ -125,6 +174,30 @@ class ParadexExecutor:
         return self._ready
 
     # ─────────────────────────────────────────────────────────────
+    # JWT helper — ambil fresh JWT dari account
+    # ─────────────────────────────────────────────────────────────
+
+    def _get_jwt(self) -> Optional[str]:
+        try:
+            acc = self._pdx.account
+            # Coba berbagai cara ambil JWT
+            for attr in ("jwt_token", "jwt", "token", "access_token"):
+                val = getattr(acc, attr, None)
+                if val:
+                    return str(val)
+            # Coba dari api_client headers
+            hdrs = getattr(self._pdx.api_client, "headers", {})
+            if isinstance(hdrs, dict):
+                for k in ("Authorization", "authorization"):
+                    v = hdrs.get(k, "")
+                    if v:
+                        return v.replace("Bearer ", "").strip()
+            return None
+        except Exception as e:
+            logger.warning(f"_get_jwt error: {e}")
+            return None
+
+    # ─────────────────────────────────────────────────────────────
     # Balance
     # ─────────────────────────────────────────────────────────────
 
@@ -132,16 +205,8 @@ class ParadexExecutor:
         if not self.is_ready():
             return {}
         try:
-            data = self._pdx.api_client.fetch_account_summary()
-            if data is None:
-                return {}
-            if hasattr(data, "__dict__"):
-                data = vars(data)
-            if isinstance(data, list) and data:
-                data = data[0]
-                if hasattr(data, "__dict__"):
-                    data = vars(data)
-            if not isinstance(data, dict):
+            data = _to_dict(self._pdx.api_client.fetch_account_summary())
+            if not data:
                 return {}
             return {
                 "free_collateral":  float(data.get("free_collateral",  data.get("available_margin",  0)) or 0),
@@ -198,8 +263,35 @@ class ParadexExecutor:
         return self._positions.get(market)
 
     # ─────────────────────────────────────────────────────────────
-    # Orders
+    # Orders — core fix ada di sini
     # ─────────────────────────────────────────────────────────────
+
+    def _post_order_direct(self, payload: dict) -> Optional[dict]:
+        """
+        POST payload ke /v1/orders langsung via requests.
+        Dipakai sebagai fallback jika submit_order() gagal.
+        """
+        import requests
+
+        jwt = self._get_jwt()
+        if not jwt:
+            logger.warning("_post_order_direct: tidak bisa ambil JWT")
+            return None
+
+        url = f"{self._base_url}/orders"
+        headers = {
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {jwt}",
+        }
+        logger.info(f"POST {url} | payload={payload}")
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=15)
+            logger.info(f"POST response: {resp.status_code} | {resp.text[:300]}")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.warning(f"_post_order_direct error: {e}")
+            return None
 
     def place_order(
         self,
@@ -233,30 +325,79 @@ class ParadexExecutor:
             logger.warning(f"place_order [build] error: {e}\n{traceback.format_exc()}")
             return None
 
-        # ── Step 2: Submit ────────────────────────────────────────
+        # ── Step 2: Sign Order object LANGSUNG ────────────────────
+        # FIX: sign_order() butuh Order object, bukan dict.
+        # Kita bypass submit_order() dan sign manual.
         try:
-            result = self._pdx.api_client.submit_order(order=order_obj, signer=self._pdx.account)
-            logger.info(f"submit_order raw => type={type(result).__name__} | val={result}")
+            signed = self._pdx.account.sign_order(order_obj)
+            logger.info(f"sign_order OK: {signed}")
         except Exception as e:
-            logger.warning(f"place_order [submit] error: {e}\n{traceback.format_exc()}")
-            if any(k in str(e).lower() for k in ("jwt", "token", "unauthorized", "401")):
-                logger.info("JWT expired, reconnecting...")
-                if self.reconnect():
-                    return self.place_order(market, side, size, order_type, price, reduce_only)
+            logger.warning(f"place_order [sign] error: {e}\n{traceback.format_exc()}")
             return None
 
-        # ── Step 3: Normalise result ──────────────────────────────
+        # ── Step 3: Bangun payload dari signed order ───────────────
+        try:
+            # signed bisa berupa dict atau object — normalise
+            if hasattr(signed, "__dict__"):
+                payload = vars(signed)
+            elif isinstance(signed, dict):
+                payload = signed
+            else:
+                # Fallback: build payload dari Order object + signature
+                payload = {
+                    "market":      market,
+                    "side":        side.upper(),
+                    "type":        order_type.upper(),
+                    "size":        str(size),
+                    "reduce_only": reduce_only,
+                }
+                if price is not None:
+                    payload["price"] = str(price)
+                # Merge fields dari signed jika ada
+                if isinstance(signed, dict):
+                    payload.update(signed)
+
+            # Pastikan field penting ada
+            payload.setdefault("market",      market)
+            payload.setdefault("side",        side.upper())
+            payload.setdefault("type",        order_type.upper())
+            payload.setdefault("size",        str(size))
+            payload.setdefault("reduce_only", reduce_only)
+
+            # Konversi Decimal ke string agar JSON-serializable
+            for k, v in payload.items():
+                if isinstance(v, Decimal):
+                    payload[k] = str(v)
+
+            logger.info(f"Order payload: {payload}")
+        except Exception as e:
+            logger.warning(f"place_order [payload] error: {e}\n{traceback.format_exc()}")
+            return None
+
+        # ── Step 4: Coba submit_order dulu, fallback ke POST direct ─
+        result = None
+
+        # Coba pakai api_client.post() jika tersedia
+        try:
+            post_fn = getattr(self._pdx.api_client, "post", None)
+            if post_fn:
+                result = post_fn("/orders", payload)
+                logger.info(f"api_client.post() result: {result}")
+        except Exception as e:
+            logger.warning(f"api_client.post() failed: {e} — trying direct POST")
+
+        # Fallback: raw requests POST
         if result is None:
-            return None
-        if isinstance(result, list):
-            result = result[0] if result else {}
-        if hasattr(result, "__dict__"):
-            result = vars(result)
-        if not isinstance(result, dict):
-            result = {"id": str(result)}
+            result = self._post_order_direct(payload)
 
+        if result is None:
+            logger.warning("place_order: semua metode gagal")
+            return None
+
+        # ── Step 5: Normalise result ──────────────────────────────
+        result = _to_dict(result)
         order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
-        logger.info(f"Order placed OK: {order_id}")
+        logger.info(f"✅ Order placed: {order_id}")
         return result
 
     def cancel_all_orders(self, market: str = None) -> bool:
