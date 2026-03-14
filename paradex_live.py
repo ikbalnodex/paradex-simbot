@@ -181,25 +181,25 @@ def _get_order_sides(strategy: str) -> tuple:
 
     Return: (eth_side, btc_side, direction_label)
 
-    Mode NORMAL (divergence):
-        S1: BUY BTC  + SELL ETH  — fade ETH outperformance
-        S2: SELL BTC + BUY ETH   — fade BTC outperformance
+    Mode NORMAL (divergence — pairs trade):
+        S1: Short ETH + Long BTC  — ETH pump lebih, fade dengan short ETH
+        S2: Long ETH  + Short BTC — ETH dump lebih, fade dengan long ETH
 
-    Mode X (momentum):
-        S1: BUY BTC  + BUY ETH   — keduanya long ikut BTC
-        S2: SELL BTC + SELL ETH  — keduanya short ikut BTC
+    Mode X (searah — keduanya sama arah):
+        S1: Short ETH + Short BTC — ETH pump lebih → short keduanya
+        S2: Long ETH  + Long BTC  — ETH dump lebih → long keduanya
     """
     mode = live_settings.get("mode", "normal").lower()
     s    = strategy.upper()
 
     if mode == "x":
-        # Mode X: BTC ikut arah ETH
-        # S2 = ETH kuat (Long ETH) → BTC ikut Long
-        # S1 = ETH lemah (Short ETH) → BTC ikut Short
-        if s == "S2":
-            return "BUY",  "BUY",  "Long ETH + Long BTC (Mode X — ikut ETH)"
-        else:
-            return "SELL", "SELL", "Short ETH + Short BTC (Mode X — ikut ETH)"
+        # Mode X: keduanya searah mengikuti sinyal ETH
+        # S1 = ETH pump lebih dari BTC → Short ETH + Short BTC
+        # S2 = ETH dump lebih dari BTC → Long ETH  + Long BTC
+        if s == "S1":
+            return "SELL", "SELL", "Short ETH + Short BTC (Mode X)"
+        else:  # S2
+            return "BUY",  "BUY",  "Long ETH + Long BTC (Mode X)"
     else:
         # Mode Normal: divergence / pairs trade
         if s == "S1":
@@ -692,7 +692,7 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         mode_hint = (
             "S1: Long BTC/Short ETH | S2: Long ETH/Short BTC"
             if mode_val == "normal" else
-            "S2: Long ETH+BTC | S1: Short ETH+BTC"
+            "S1: Short ETH+BTC | S2: Long ETH+BTC"
         )
         dr_str    = " 🧪 *DRYRUN*" if dryrun else ""
         reply(
@@ -826,14 +826,14 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
             )
             reply(
                 f"⚙️ *Mode Trading Saat Ini:* {_mode_desc}\n\n"
-                f"*Mode NORMAL (default):*\n"
+                f"*Mode NORMAL (default — divergence):*\n"
                 f"│ S1: Long BTC / Short ETH\n"
                 f"│ S2: Long ETH / Short BTC\n"
-                f"│ → Strategi divergence, taruhan gap konvergen\n\n"
-                f"*Mode X (ETH sebagai anchor):*\n"
-                f"│ S2 (ETH naik): Long ETH + *Long BTC* ← BTC ikut ETH\n"
-                f"│ S1 (ETH turun): Short ETH + *Short BTC* ← BTC ikut ETH\n"
-                f"│ → Strategi momentum, BTC mengikuti arah ETH\n\n"
+                f"│ → Pairs trade, taruhan gap konvergen\n\n"
+                f"*Mode X (searah — keduanya 1 arah):*\n"
+                f"│ S1 (ETH pump > BTC): *Short ETH + Short BTC*\n"
+                f"│ S2 (ETH dump > BTC): *Long ETH + Long BTC*\n"
+                f"│ → Tidak ada hedge, keduanya sama arah\n\n"
                 f"Ganti mode: `/live mode normal` atau `/live mode x`"
             )
             return
@@ -850,10 +850,10 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
             live_settings["mode"] = "x"
             reply(
                 "🟣 *Mode X diaktifkan*\n\n"
-                "│ S2 (ETH naik): Long ETH + *Long BTC* ← BTC ikut ETH\n"
-                "│ S1 (ETH turun): Short ETH + *Short BTC* ← BTC ikut ETH\n\n"
-                "_Strategi momentum — BTC mengikuti arah ETH._\n"
-                "⚠️ _Kedua posisi searah, risiko lebih tinggi dari Mode Normal._"
+                "│ S1 (ETH pump > BTC): *Short ETH + Short BTC*\n"
+                "│ S2 (ETH dump > BTC): *Long ETH + Long BTC*\n\n"
+                "_Kedua posisi searah — tidak ada hedge._\n"
+                "⚠️ _Risiko lebih tinggi dari Mode Normal._"
             )
         else:
             reply("Gunakan `/live mode normal` atau `/live mode x`.")
