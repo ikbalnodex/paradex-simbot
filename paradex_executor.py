@@ -237,6 +237,8 @@ class ParadexExecutor:
         try:
             logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
             from paradex_py.common.order import Order, OrderSide, OrderType
+            import inspect
+            logger.info(f'Order signature: {inspect.signature(Order.__init__)}')
             order_obj = Order(
                 market=market,
                 side=OrderSide(side.upper()),
