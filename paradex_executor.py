@@ -4,20 +4,43 @@ Uses paradex-py with L1 Ethereum key.
 l1_private_key MUST be passed as integer (int_from_hex).
 
 ROOT CAUSE FIX:
-    submit_order() di paradex-py mengkonversi Order → dict, lalu
-    pass dict itu ke sign_order() yang expect object dengan .id → AttributeError.
+    submit_order() di paradex-py mengkonversi Order → dict, lalu pass dict
+    ke sign_order() yang expect object dengan .id → AttributeError.
 
-    Workaround: sign Order object LANGSUNG via account.sign_order(order),
-    lalu POST payload ke /v1/orders manual via requests.
+    Workaround:
+    1. sign Order object langsung via account.sign_order(order_obj)
+       → returns [r, s] signature array
+    2. Build payload manual dengan signature + signature_timestamp (ms)
+    3. POST ke /v1/orders via requests
+
+    Size rounding:
+    - ETH: step 0.0001  → round to 4 decimal
+    - BTC: step 0.00001 → round to 5 decimal
 """
 import asyncio
 import logging
-import traceback
 import time
-from decimal import Decimal
+import traceback
+from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ── Market size steps ─────────────────────────────────────────────────────────
+# Paradex minimum size step per market
+_SIZE_STEP = {
+    "ETH-USD-PERP": Decimal("0.0001"),
+    "BTC-USD-PERP": Decimal("0.00001"),
+}
+_DEFAULT_STEP = Decimal("0.0001")
+
+
+def _round_size(size: float, market: str) -> Decimal:
+    """Round size ke step yang valid untuk market."""
+    step = _SIZE_STEP.get(market, _DEFAULT_STEP)
+    d    = Decimal(str(size))
+    return (d / step).to_integral_value(rounding=ROUND_DOWN) * step
+
 
 # ── Import paradex-py ─────────────────────────────────────────────────────────
 PARADEX_PY_AVAILABLE = False
@@ -58,7 +81,6 @@ except ImportError as e:
 
 
 def _int_from_hex(key: str) -> int:
-    """Convert hex private key string ke integer."""
     key = key.strip()
     if not key.startswith("0x") and not key.startswith("0X"):
         key = "0x" + key
@@ -66,11 +88,11 @@ def _int_from_hex(key: str) -> int:
 
 
 def _to_dict(obj):
-    """Normalise API response ke dict."""
     if obj is None:
         return None
-    if isinstance(obj, list):
-        obj = obj[0] if obj else {}
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        # list of dicts = list of results, bukan signature
+        obj = obj[0]
     if hasattr(obj, "__dict__"):
         obj = vars(obj)
     if not isinstance(obj, dict):
@@ -79,15 +101,6 @@ def _to_dict(obj):
 
 
 class ParadexExecutor:
-    """
-    Executor untuk koneksi dan order ke Paradex.
-
-    ParadexExecutor(l1_private_key="0x...", l1_address="0x...")
-
-    l1_private_key = Ethereum private key dari MetaMask
-    l1_address     = Ethereum wallet address
-    """
-
     def __init__(
         self,
         l1_private_key: str = None,
@@ -101,7 +114,7 @@ class ParadexExecutor:
         self._ready          = False
         self._positions      = {}
         self._pdx            = None
-        self._base_url       = None  # set saat init
+        self._base_url       = "https://api.prod.paradex.trade/v1"
 
         if not PARADEX_PY_AVAILABLE:
             logger.error("paradex-py tidak tersedia")
@@ -151,12 +164,13 @@ class ParadexExecutor:
                 else:
                     raise init_err
 
-            # Simpan base URL untuk POST manual
+            # Deteksi base URL
             try:
-                self._base_url = self._pdx.api_client.base_url.rstrip("/")
+                url = str(self._pdx.api_client.base_url).rstrip("/")
+                if url.startswith("http"):
+                    self._base_url = url
                 logger.info(f"Base URL: {self._base_url}")
             except Exception:
-                self._base_url = "https://api.prod.paradex.trade/v1"
                 logger.info(f"Base URL fallback: {self._base_url}")
 
             self._ready = True
@@ -174,18 +188,16 @@ class ParadexExecutor:
         return self._ready
 
     # ─────────────────────────────────────────────────────────────
-    # JWT helper — ambil fresh JWT dari account
+    # JWT
     # ─────────────────────────────────────────────────────────────
 
     def _get_jwt(self) -> Optional[str]:
         try:
             acc = self._pdx.account
-            # Coba berbagai cara ambil JWT
             for attr in ("jwt_token", "jwt", "token", "access_token"):
                 val = getattr(acc, attr, None)
                 if val:
                     return str(val)
-            # Coba dari api_client headers
             hdrs = getattr(self._pdx.api_client, "headers", {})
             if isinstance(hdrs, dict):
                 for k in ("Authorization", "authorization"):
@@ -229,13 +241,7 @@ class ParadexExecutor:
             data = self._pdx.api_client.fetch_positions()
             if data is None:
                 return
-            if isinstance(data, list):
-                results = data
-            elif isinstance(data, dict):
-                results = data.get("results", data.get("positions", []))
-            else:
-                results = []
-
+            results = data if isinstance(data, list) else data.get("results", data.get("positions", []))
             self._positions = {}
             for pos in results:
                 if hasattr(pos, "__dict__"):
@@ -263,35 +269,8 @@ class ParadexExecutor:
         return self._positions.get(market)
 
     # ─────────────────────────────────────────────────────────────
-    # Orders — core fix ada di sini
+    # Orders
     # ─────────────────────────────────────────────────────────────
-
-    def _post_order_direct(self, payload: dict) -> Optional[dict]:
-        """
-        POST payload ke /v1/orders langsung via requests.
-        Dipakai sebagai fallback jika submit_order() gagal.
-        """
-        import requests
-
-        jwt = self._get_jwt()
-        if not jwt:
-            logger.warning("_post_order_direct: tidak bisa ambil JWT")
-            return None
-
-        url = f"{self._base_url}/orders"
-        headers = {
-            "Content-Type":  "application/json",
-            "Authorization": f"Bearer {jwt}",
-        }
-        logger.info(f"POST {url} | payload={payload}")
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=15)
-            logger.info(f"POST response: {resp.status_code} | {resp.text[:300]}")
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.warning(f"_post_order_direct error: {e}")
-            return None
 
     def place_order(
         self,
@@ -306,7 +285,13 @@ class ParadexExecutor:
             logger.warning("Paradex not ready — cannot place order")
             return None
 
-        logger.info(f"Placing order: {side} {size} {market} @ {order_type}")
+        # Round size ke step yang valid
+        size_dec = _round_size(size, market)
+        logger.info(f"Placing order: {side} {size_dec} {market} @ {order_type} (raw={size})")
+
+        if size_dec <= 0:
+            logger.warning(f"place_order: size terlalu kecil setelah rounding ({size} → {size_dec})")
+            return None
 
         # ── Step 1: Build Order object ────────────────────────────
         try:
@@ -316,7 +301,7 @@ class ParadexExecutor:
                 market=market,
                 order_type=OrderType(order_type.upper()),
                 order_side=OrderSide(side.upper()),
-                size=Decimal(str(size)),
+                size=size_dec,
                 limit_price=Decimal(str(price)) if price is not None else Decimal("0"),
                 reduce_only=reduce_only,
             )
@@ -325,80 +310,90 @@ class ParadexExecutor:
             logger.warning(f"place_order [build] error: {e}\n{traceback.format_exc()}")
             return None
 
-        # ── Step 2: Sign Order object LANGSUNG ────────────────────
-        # FIX: sign_order() butuh Order object, bukan dict.
-        # Kita bypass submit_order() dan sign manual.
+        # ── Step 2: Sign Order object langsung ───────────────────
+        # sign_order() returns [r, s] list — bukan dict
         try:
-            signed = self._pdx.account.sign_order(order_obj)
-            logger.info(f"sign_order OK: {signed}")
+            sig_timestamp_ms = int(time.time() * 1000)
+            # Inject timestamp ke order supaya ikut di-sign
+            if hasattr(order_obj, "signature_timestamp"):
+                order_obj.signature_timestamp = sig_timestamp_ms
+
+            signature = self._pdx.account.sign_order(order_obj)
+            logger.info(f"sign_order OK: type={type(signature).__name__} | {signature}")
+
+            # signature = [r, s] list of ints/strings
+            if isinstance(signature, (list, tuple)) and len(signature) >= 2:
+                sig_str = f"0x{int(signature[0]):064x}{int(signature[1]):064x}"
+            elif isinstance(signature, str):
+                sig_str = signature
+            else:
+                sig_str = str(signature)
+
+            logger.info(f"Signature hex: {sig_str[:32]}...")
         except Exception as e:
             logger.warning(f"place_order [sign] error: {e}\n{traceback.format_exc()}")
             return None
 
-        # ── Step 3: Bangun payload dari signed order ───────────────
+        # ── Step 3: POST payload dengan signature ─────────────────
+        import requests
+
+        jwt = self._get_jwt()
+        if not jwt:
+            logger.warning("place_order: tidak bisa ambil JWT")
+            return None
+
+        payload = {
+            "market":              market,
+            "side":                side.upper(),
+            "type":                order_type.upper(),
+            "size":                str(size_dec),
+            "signature":           sig_str,
+            "signature_timestamp": sig_timestamp_ms,
+            "reduce_only":         reduce_only,
+            "instruction":         "GTC",
+        }
+        if price is not None:
+            payload["price"] = str(price)
+
+        # Ambil client_id dari order_obj jika ada
+        client_id = getattr(order_obj, "client_id", None)
+        if client_id:
+            payload["client_id"] = str(client_id)
+
+        logger.info(f"POST payload: {payload}")
+
+        url = f"{self._base_url}/orders"
+        headers = {
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {jwt}",
+        }
+
         try:
-            # signed bisa berupa dict atau object — normalise
-            if hasattr(signed, "__dict__"):
-                payload = vars(signed)
-            elif isinstance(signed, dict):
-                payload = signed
+            resp = requests.post(url, json=payload, headers=headers, timeout=15)
+            logger.info(f"POST {resp.status_code}: {resp.text[:400]}")
+
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                result = _to_dict(result)
+                order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
+                logger.info(f"✅ Order placed: {order_id}")
+                return result
+            elif resp.status_code == 401:
+                logger.info("JWT expired, reconnecting...")
+                if self.reconnect():
+                    return self.place_order(market, side, size, order_type, price, reduce_only)
+                return None
             else:
-                # Fallback: build payload dari Order object + signature
-                payload = {
-                    "market":      market,
-                    "side":        side.upper(),
-                    "type":        order_type.upper(),
-                    "size":        str(size),
-                    "reduce_only": reduce_only,
-                }
-                if price is not None:
-                    payload["price"] = str(price)
-                # Merge fields dari signed jika ada
-                if isinstance(signed, dict):
-                    payload.update(signed)
+                logger.warning(f"place_order HTTP {resp.status_code}: {resp.text}")
+                return None
 
-            # Pastikan field penting ada
-            payload.setdefault("market",      market)
-            payload.setdefault("side",        side.upper())
-            payload.setdefault("type",        order_type.upper())
-            payload.setdefault("size",        str(size))
-            payload.setdefault("reduce_only", reduce_only)
-
-            # Konversi Decimal ke string agar JSON-serializable
-            for k, v in payload.items():
-                if isinstance(v, Decimal):
-                    payload[k] = str(v)
-
-            logger.info(f"Order payload: {payload}")
         except Exception as e:
-            logger.warning(f"place_order [payload] error: {e}\n{traceback.format_exc()}")
+            logger.warning(f"place_order [POST] error: {e}\n{traceback.format_exc()}")
             return None
 
-        # ── Step 4: Coba submit_order dulu, fallback ke POST direct ─
-        result = None
-
-        # Coba pakai api_client.post() jika tersedia
-        try:
-            post_fn = getattr(self._pdx.api_client, "post", None)
-            if post_fn:
-                result = post_fn("/orders", payload)
-                logger.info(f"api_client.post() result: {result}")
-        except Exception as e:
-            logger.warning(f"api_client.post() failed: {e} — trying direct POST")
-
-        # Fallback: raw requests POST
-        if result is None:
-            result = self._post_order_direct(payload)
-
-        if result is None:
-            logger.warning("place_order: semua metode gagal")
-            return None
-
-        # ── Step 5: Normalise result ──────────────────────────────
-        result = _to_dict(result)
-        order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
-        logger.info(f"✅ Order placed: {order_id}")
-        return result
+    # ─────────────────────────────────────────────────────────────
+    # Cancel / Fills / Close
+    # ─────────────────────────────────────────────────────────────
 
     def cancel_all_orders(self, market: str = None) -> bool:
         if not self.is_ready():
