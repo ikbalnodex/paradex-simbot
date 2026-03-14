@@ -2,19 +2,6 @@
 """
 Monk Bot B — BTC/ETH Divergence Bot (Swing / Day Trade Edition)
 + Paradex Live Trading Integration
-
-Fitur utama:
-- Redis READ-ONLY consumer dari Bot A
-- Peak Watch mode (on/off)
-- Trailing SL + TP dengan estimasi harga ETH
-- Gap Driver Analysis  — ETH-led vs BTC-led
-- ETH/BTC Ratio Percentile — conviction meter
-- Dollar-Neutral Sizing Guide
-- Convergence Path Scenarios (A & B)
-- Net Combined P&L Tracker
-- [NEW] Paradex Live Execution via Subkey
-- [NEW] /pdx — koneksi & status Paradex
-- [NEW] /live — toggle & konfigurasi live trading
 """
 import json
 import time
@@ -43,7 +30,7 @@ from config import (
 )
 
 # =============================================================================
-# ── [NEW] Paradex Live Trading Integration ───────────────────────────────────
+# Paradex Live Trading Integration
 # =============================================================================
 try:
     from paradex_live import (
@@ -56,23 +43,22 @@ try:
         get_executor,
     )
     PARADEX_LIVE_AVAILABLE = True
-    logger.info("✅ Paradex live trading module loaded.")
+    logger.info("Paradex live trading module berhasil dimuat.")
 except ImportError as _pdx_err:
     PARADEX_LIVE_AVAILABLE = False
-    logger.warning(f"Paradex live module tidak tersedia: {_pdx_err}")
+    logger.warning(f"Modul Paradex live tidak tersedia: {_pdx_err}")
 
-    # Stubs supaya bot tetap jalan walau paradex_live.py tidak ada
     def handle_pdx_command(args, chat_id, send_reply_fn=None):
         if send_reply_fn:
             send_reply_fn(
-                "⚠️ `paradex_live.py` tidak ditemukan.\n"
-                "Pastikan file ada di folder yang sama dengan bot.",
+                "⚠️ File `paradex_live.py` tidak ditemukan.\n"
+                "Pastikan file tersebut berada di folder yang sama dengan bot.",
                 chat_id,
             )
 
     def handle_live_command(args, chat_id, send_reply_fn=None):
         if send_reply_fn:
-            send_reply_fn("⚠️ `paradex_live.py` tidak ditemukan.", chat_id)
+            send_reply_fn("⚠️ File `paradex_live.py` tidak ditemukan.", chat_id)
 
     def is_live_active(): return False
     def live_open_or_sim(*a, **kw): return ""
@@ -81,7 +67,7 @@ except ImportError as _pdx_err:
     def get_executor(): return None
 
 # =============================================================================
-# Constants
+# Konstanta
 # =============================================================================
 DEFAULT_LOOKBACK_HOURS  = 24
 HISTORY_BUFFER_MINUTES  = 30
@@ -89,7 +75,7 @@ REDIS_REFRESH_MINUTES   = 1
 RATIO_WINDOW_DAYS       = 30
 
 # =============================================================================
-# Data Structures
+# Struktur Data
 # =============================================================================
 class Mode(Enum):
     SCAN       = "SCAN"
@@ -112,7 +98,7 @@ class PriceData(NamedTuple):
     eth_updated_at: datetime
 
 # =============================================================================
-# Global State
+# State Global
 # =============================================================================
 price_history:   List[PricePoint]    = []
 current_mode:    Mode                = Mode.SCAN
@@ -227,18 +213,18 @@ def _redis_request(method: str, path: str, body=None):
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
-        logger.warning(f"Redis request failed: {e}")
+        logger.warning(f"Redis request gagal: {e}")
         return None
 
 def load_history() -> None:
     global price_history
     if not UPSTASH_REDIS_URL:
-        logger.info("Redis not configured")
+        logger.info("Redis belum dikonfigurasi")
         return
     try:
         result = _redis_request("GET", f"/get/{REDIS_KEY}")
         if not result or result.get("result") is None:
-            logger.info("No history in Redis yet")
+            logger.info("Belum ada data history di Redis")
             return
         data = json.loads(result["result"])
         price_history = [
@@ -249,9 +235,9 @@ def load_history() -> None:
             )
             for p in data
         ]
-        logger.info(f"Loaded {len(price_history)} points from Redis")
+        logger.info(f"Berhasil memuat {len(price_history)} data dari Redis")
     except Exception as e:
-        logger.warning(f"Failed to load history: {e}")
+        logger.warning(f"Gagal memuat history: {e}")
         price_history = []
 
 def refresh_history_from_redis(now: datetime) -> None:
@@ -265,7 +251,7 @@ def refresh_history_from_redis(now: datetime) -> None:
     load_history()
     prune_history(now)
     last_redis_refresh = now
-    logger.debug(f"Redis refreshed. {len(price_history)} points after prune")
+    logger.debug(f"Redis diperbarui. {len(price_history)} data setelah prune")
 
 def save_pos_data() -> bool:
     if not UPSTASH_REDIS_URL:
@@ -274,12 +260,12 @@ def save_pos_data() -> bool:
         payload = json.dumps(pos_data, default=str)
         result  = _redis_request("POST", f"/set/{REDIS_KEY_POS}", body=payload)
         if result and result.get("result") == "OK":
-            logger.info("pos_data saved to Redis")
+            logger.info("Data posisi berhasil disimpan ke Redis")
             return True
-        logger.warning(f"save_pos_data unexpected result: {result}")
+        logger.warning(f"save_pos_data hasil tidak terduga: {result}")
         return False
     except Exception as e:
-        logger.warning(f"save_pos_data failed: {e}")
+        logger.warning(f"save_pos_data gagal: {e}")
         return False
 
 def load_pos_data() -> None:
@@ -289,7 +275,7 @@ def load_pos_data() -> None:
     try:
         result = _redis_request("GET", f"/get/{REDIS_KEY_POS}")
         if not result or result.get("result") is None:
-            logger.info("No pos_data in Redis")
+            logger.info("Belum ada data posisi di Redis")
             return
         data = json.loads(result["result"])
         for k in pos_data:
@@ -299,10 +285,10 @@ def load_pos_data() -> None:
                     pos_data[k] = float(data[k])
                 else:
                     pos_data[k] = data[k]
-        logger.info(f"pos_data loaded from Redis: {pos_data.get('strategy')} "
+        logger.info(f"Data posisi dimuat dari Redis: {pos_data.get('strategy')} "
                     f"ETH@{pos_data.get('eth_entry_price')} BTC@{pos_data.get('btc_entry_price')}")
     except Exception as e:
-        logger.warning(f"load_pos_data failed: {e}")
+        logger.warning(f"load_pos_data gagal: {e}")
 
 def clear_pos_data_redis() -> bool:
     if not UPSTASH_REDIS_URL:
@@ -311,7 +297,7 @@ def clear_pos_data_redis() -> bool:
         _redis_request("POST", f"/del/{REDIS_KEY_POS}")
         return True
     except Exception as e:
-        logger.warning(f"clear_pos_data_redis failed: {e}")
+        logger.warning(f"clear_pos_data_redis gagal: {e}")
         return False
 
 # =============================================================================
@@ -332,7 +318,7 @@ def _post_telegram(chat_id: str, message: str) -> bool:
         return True
     except requests.HTTPError as e:
         if resp.status_code == 400:
-            logger.warning(f"Markdown parse error (400), retry as plain text.")
+            logger.warning("Markdown parse error (400), mencoba kirim plain text.")
             import re as _re
             plain = _re.sub(r"[*_`\[\]]", "", message)
             try:
@@ -344,12 +330,12 @@ def _post_telegram(chat_id: str, message: str) -> bool:
                 resp2.raise_for_status()
                 return True
             except requests.RequestException as e2:
-                logger.error(f"Plain text fallback gagal: {e2}")
+                logger.error(f"Fallback plain text gagal: {e2}")
                 return False
-        logger.error(f"Failed to send Telegram message: {e}")
+        logger.error(f"Gagal mengirim pesan Telegram: {e}")
         return False
     except requests.RequestException as e:
-        logger.error(f"Failed to send Telegram message: {e}")
+        logger.error(f"Gagal mengirim pesan Telegram: {e}")
         return False
 
 def send_alert(message: str) -> bool:
@@ -357,7 +343,7 @@ def send_alert(message: str) -> bool:
         return False
     ok = _post_telegram(TELEGRAM_CHAT_ID, message)
     if ok:
-        logger.info("Alert sent")
+        logger.info("Notifikasi terkirim")
     return ok
 
 def send_reply(message: str, chat_id: str) -> bool:
@@ -386,7 +372,7 @@ def get_telegram_updates() -> list:
                 last_update_id = updates[-1]["update_id"]
             return updates
     except requests.RequestException as e:
-        logger.debug(f"Failed to get updates: {e}")
+        logger.debug(f"Gagal mengambil update: {e}")
     return []
 
 def process_commands() -> None:
@@ -401,7 +387,7 @@ def process_commands() -> None:
         parts   = text.split()
         command = parts[0].lower().split("@")[0]
         args    = parts[1:] if len(parts) > 1 else []
-        logger.info(f"Command: {command} from {chat_id}")
+        logger.info(f"Command diterima: {command} dari {chat_id}")
 
         dispatch = {
             "/settings":  lambda: handle_settings_command(chat_id),
@@ -428,16 +414,15 @@ def process_commands() -> None:
             "/setfunding":lambda: handle_setfunding_command(args, chat_id),
             "/velocity":  lambda: handle_velocity_command(chat_id),
             "/exitconf":  lambda: handle_exitconf_command(args, chat_id),
-            # ── [NEW] Paradex Live Trading ────────────────────────────────
+            # Paradex Live Trading
             "/pdx":       lambda: handle_pdx_command(args, chat_id, send_reply),
             "/live":      lambda: handle_live_command(args, chat_id, send_reply),
-            # ─────────────────────────────────────────────────────────────
         }
         if command in dispatch:
             dispatch[command]()
 
 # =============================================================================
-# ─── MENTOR ANALYSIS ENGINE ──────────────────────────────────────────────────
+# Analisis Engine
 # =============================================================================
 
 def analyze_gap_driver(btc_ret, eth_ret, gap):
@@ -622,8 +607,8 @@ def _build_conviction_detail(strategy, stars, pct_r, curr_r, avg_r, hi_r, lo_r, 
         if pct_r >= 90:   timing = "🟢 Timing sangat baik"
         elif pct_r >= 75: timing = "🟡 Timing baik"
         elif pct_r >= 60: timing = "🟠 Timing cukup"
-        else:             timing = "🔴 Timing kurang"
-        risk = "⚠️ *Risk:* Ratio bisa terus naik sebelum revert"
+        else:             timing = "🔴 Timing kurang ideal"
+        risk = "⚠️ *Risiko:* Ratio bisa terus naik sebelum revert"
         entry_note = f"_💡 Mentor rule: ratio ≥75th pct = konfirmasi S1. Sekarang {pct_r}th → {'✅' if pct_r >= 75 else '❌'}_"
         reason_block = "\n".join(f"│ ✅ {r}" for r in reasons) if reasons else "│ Belum ada sinyal kuat"
         return (
@@ -652,8 +637,8 @@ def _build_conviction_detail(strategy, stars, pct_r, curr_r, avg_r, hi_r, lo_r, 
         if pct_r <= 10:   timing = "🟢 Timing sangat baik"
         elif pct_r <= 25: timing = "🟡 Timing baik"
         elif pct_r <= 40: timing = "🟠 Timing cukup"
-        else:             timing = "🔴 Timing kurang"
-        risk = "⚠️ *Risk:* Ratio bisa terus turun"
+        else:             timing = "🔴 Timing kurang ideal"
+        risk = "⚠️ *Risiko:* Ratio bisa terus turun"
         entry_note = f"_💡 Mentor rule: ratio ≤25th pct = konfirmasi S2. Sekarang {pct_r}th → {'✅' if pct_r <= 25 else '❌'}_"
         reason_block = "\n".join(f"│ ✅ {r}" for r in reasons) if reasons else "│ Belum ada sinyal kuat untuk S2"
         return (
@@ -735,14 +720,14 @@ def get_pairs_health(strategy, current_gap):
     else:                return "🔴", f"Berlawanan arah. Progress {progress:.0f}%"
 
 # =============================================================================
-# ─── POSITION HEALTH ENGINE ──────────────────────────────────────────────────
+# Position Health Engine
 # =============================================================================
 
 def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) -> str:
     if not settings["sim_enabled"]:
         return ""
     if sim_trade["active"]:
-        return "_⚠️ Sim: posisi sudah aktif, skip open._\n"
+        return "_⚠️ Sim: posisi sudah aktif, lewati open._\n"
 
     if settings["sim_regime_filter"]:
         btc_r = entry_btc_ret
@@ -750,19 +735,19 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
         skip_reason = None
         if strategy == Strategy.S1 and btc_r < 0:
             skip_reason = (
-                f"Gap+ tapi market *DUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
+                f"Gap+ tapi market sedang *DUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
                 f"_S1 hanya valid saat market sedang pump._"
             )
         elif strategy == Strategy.S2 and btc_r > 0:
             skip_reason = (
-                f"Gap- tapi market *PUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
+                f"Gap- tapi market sedang *PUMP* (BTC {btc_r:+.2f}% / ETH {eth_r:+.2f}%)\n"
                 f"_S2 hanya valid saat market sedang dump._"
             )
         if skip_reason:
             return (
                 f"\n🤖 *[SIM] Entry Dilewati — Regime Mismatch* ⚠️\n"
                 f"┌─────────────────────\n│ {skip_reason}\n└─────────────────────\n"
-                f"_Filter bisa dimatikan: `/sim regime off`_\n"
+                f"_Filter dapat dinonaktifkan: `/sim regime off`_\n"
             )
 
     margin  = float(settings["sim_margin_usd"])
@@ -813,10 +798,10 @@ def sim_open_position(strategy: Strategy, btc_price: float, eth_price: float) ->
         f"┌─────────────────────\n"
         f"│ ETH: *{eth_dir}* {abs(eth_qty):.4f} @ ${eth_price:,.2f}\n"
         f"│ BTC: *{btc_dir}* {abs(btc_qty):.6f} @ ${btc_price:,.2f}\n"
-        f"│ Leverage: {lev:.0f}x | Ratio: {er:.0f}/{br:.0f}\n"
-        f"│ Fee open: ${fee_open:.3f}\n"
+        f"│ Leverage: {lev:.0f}x | Rasio: {er:.0f}/{br:.0f}\n"
+        f"│ Fee buka: ${fee_open:.3f}\n"
         f"└─────────────────────\n"
-        f"_Ketik `/health` untuk monitor PnL secara live._\n"
+        f"_Ketik `/health` untuk memantau P&L secara live._\n"
     )
 
 def sim_close_position(btc_price: float, eth_price: float, reason: str = "EXIT") -> str:
@@ -880,10 +865,10 @@ def sim_close_position(btc_price: float, eth_price: float, reason: str = "EXIT")
         f"│ ETH: {eth_entry:,.2f} → {eth_price:,.2f}\n"
         f"│ BTC: {btc_entry:,.2f} → {btc_price:,.2f}\n"
         f"├─────────────────────\n"
-        f"│ *Net PnL: {sign}${net_pnl:.2f} ({sign}{net_pct:.2f}%)*\n"
+        f"│ *Net P&L: {sign}${net_pnl:.2f} ({sign}{net_pct:.2f}%)*\n"
         f"│ Fee: -${total_fee:.3f} | Durasi: {dur_str}\n"
         f"└─────────────────────\n"
-        f"Total trade: {len(sim_trade['history'])} | `/simstats` untuk rekap\n"
+        f"Total trade: {len(sim_trade['history'])} | Ketik `/simstats` untuk rekap\n"
     )
 
 def calc_gap_velocity() -> dict:
@@ -995,7 +980,7 @@ def calc_position_pnl() -> dict:
         if margin_ratio >= 10:   health_e, health_label = "🟢", "SEHAT"
         elif margin_ratio >= 5:  health_e, health_label = "🟡", "PERHATIKAN"
         elif margin_ratio >= 3:  health_e, health_label = "🟠", "WASPADA"
-        else:                    health_e, health_label = "🔴", "BAHAYA — Dekat Liquidasi!"
+        else:                    health_e, health_label = "🔴", "BAHAYA — Mendekati Likuidasi!"
 
         return {
             "eth_pnl": eth_pnl, "eth_pnl_pct": eth_pnl_pct,
@@ -1036,7 +1021,7 @@ def build_position_health_message(h: dict) -> str:
     def _s(v): return "+" if v >= 0 else ""
     def _e(v): return "🟢" if v >= 0 else "🔴"
 
-    # ── Sync dari Paradex kalau live aktif ──────────────────────────────────
+    # Sinkronisasi dari Paradex jika live aktif
     if PARADEX_LIVE_AVAILABLE and is_live_active():
         try:
             executor = get_executor()
@@ -1044,7 +1029,6 @@ def build_position_health_message(h: dict) -> str:
                 executor.sync_all()
                 pdx_eth = executor.get_live_position("ETH-USD-PERP")
                 pdx_btc = executor.get_live_position("BTC-USD-PERP")
-                # Override pos_data dengan data real dari Paradex
                 if pdx_eth:
                     pos_data["eth_entry_price"] = pdx_eth["avg_entry"]
                     pos_data["eth_qty"]         = abs(pdx_eth["size"]) if pdx_eth["side"] == "LONG" else -abs(pdx_eth["size"])
@@ -1055,7 +1039,6 @@ def build_position_health_message(h: dict) -> str:
                     pos_data["btc_qty"]         = abs(pdx_btc["size"]) if pdx_btc["side"] == "LONG" else -abs(pdx_btc["size"])
                     pos_data["btc_leverage"]    = pdx_btc.get("leverage", live_settings.get("leverage", 10))
                     pos_data["btc_liq_price"]   = pdx_btc.get("liq_price")
-                # Recalculate h dengan data terbaru
                 h = calc_position_pnl()
                 if not h:
                     h = {}
@@ -1064,12 +1047,11 @@ def build_position_health_message(h: dict) -> str:
                 eth_dir = "Long 📈" if eth_qty and eth_qty > 0 else "Short 📉"
                 btc_dir = "Long 📈" if btc_qty and btc_qty > 0 else "Short 📉"
         except Exception as e:
-            logger.warning(f"health sync from Paradex failed: {e}")
+            logger.warning(f"Sinkronisasi health dari Paradex gagal: {e}")
 
     if not h:
-        return "⚠️ Gagal kalkulasi health. Coba `/setpos` ulang."
+        return "⚠️ Kalkulasi health gagal. Silakan coba `/setpos` ulang."
 
-    # ── Liq price & jarak ───────────────────────────────────────────────────
     eth_liq_s  = f"${h['eth_liq_est']:,.2f}" if h.get("eth_liq_est") else "N/A"
     btc_liq_s  = f"${h['btc_liq_est']:,.2f}" if h.get("btc_liq_est") else "N/A"
     eth_dist_s = f"{h['eth_dist_liq']:.1f}% jauh" if h.get("eth_dist_liq") else "N/A"
@@ -1077,7 +1059,6 @@ def build_position_health_message(h: dict) -> str:
     eth_liq_e  = "⚠️" if h.get("eth_danger") else "✅"
     btc_liq_e  = "⚠️" if h.get("btc_danger") else "✅"
 
-    # ── Funding block ────────────────────────────────────────────────────────
     eth_fr = pos_data.get("eth_funding_rate") or 0.0
     btc_fr = pos_data.get("btc_funding_rate") or 0.0
     has_funding = eth_fr != 0.0 or btc_fr != 0.0
@@ -1094,22 +1075,21 @@ def build_position_health_message(h: dict) -> str:
         net_f_dir = "terima 🟢" if net_f8h >= 0 else "bayar 🔴"
         be_str    = f"{be_h:.1f}h" if be_h is not None else "N/A"
         funding_block = (
-            f"\n*💸 Funding Cost:*\n"
+            f"\n*💸 Biaya Funding:*\n"
             f"┌─────────────────────\n"
             f"│ ETH: {eth_fr:+.4f}%/8h → {_s(eth_f8h)}${abs(eth_f8h):.3f} ({eth_f_dir})\n"
             f"│ BTC: {btc_fr:+.4f}%/8h → {_s(btc_f8h)}${abs(btc_f8h):.3f} ({btc_f_dir})\n"
             f"│ Net: {_s(net_f8h)}${abs(net_f8h):.3f}/8h | {_s(net_fday)}${abs(net_fday):.2f}/hari ({net_f_dir})\n"
             f"│ Total dibayar: {_s(total_fp)}${abs(total_fp):.2f}\n"
-            f"│ Net PnL after funding: {_e(h['net_pnl_after_funding'])} "
+            f"│ Net P&L setelah funding: {_e(h['net_pnl_after_funding'])} "
             f"{_s(h['net_pnl_after_funding'])}${h['net_pnl_after_funding']:,.2f} "
             f"({_s(h['net_pnl_af_pct'])}{h['net_pnl_af_pct']:.2f}%)\n"
             + (f"│ ⏱️ Break-even: *{be_str}* lagi\n" if be_h is not None else "")
             + f"└─────────────────────\n"
         )
     else:
-        funding_block = "\n_💸 Funding: belum diset — gunakan `/setfunding`._\n"
+        funding_block = "\n_💸 Funding belum diset — gunakan `/setfunding`._\n"
 
-    # ── Gap velocity block ───────────────────────────────────────────────────
     vel = calc_gap_velocity()
     vel_block = ""
     if vel:
@@ -1126,24 +1106,23 @@ def build_position_health_message(h: dict) -> str:
             d15_e, d15_s = "—", "N/A"
         d60_s    = f"{d60:+.3f}%" if d60 is not None else "N/A"
         accel_s  = (
-            "📉 decelerating" if accel and accel < 0.8
-            else "📈 accelerating" if accel and accel > 1.2
-            else "➡️ steady"
+            "📉 melambat" if accel and accel < 0.8
+            else "📈 mempercepat" if accel and accel > 1.2
+            else "➡️ stabil"
         ) if accel else "N/A"
-        eta_s    = f"~{int(eta)}m" if eta is not None and eta < 10000 else "tidak bisa hitung"
+        eta_s    = f"~{int(eta)}m" if eta is not None and eta < 10000 else "tidak dapat dihitung"
         vel_block = (
-            f"\n*📡 Gap Velocity:*\n"
+            f"\n*📡 Kecepatan Gap:*\n"
             f"┌─────────────────────\n"
             f"│ Gap sekarang: {curr_gap:+.3f}%\n"
             f"│ Δ 15m: {d15_s} {d15_e}\n"
             f"│ Δ 60m: {d60_s}\n"
-            f"│ Trend: {accel_s}\n"
-            f"│ ETA ke TP: ~{eta_s}\n"
-            f"│ Data: {vel['n_pts']} pts\n"
+            f"│ Tren: {accel_s}\n"
+            f"│ Estimasi ke TP: ~{eta_s}\n"
+            f"│ Data: {vel['n_pts']} titik\n"
             f"└─────────────────────\n"
         )
 
-    # ── Margin health bar ────────────────────────────────────────────────────
     mr       = h.get("margin_ratio", 0)
     mr_fill  = min(10, int(mr / 2))
     mr_bar   = "█" * mr_fill + "░" * (10 - mr_fill)
@@ -1151,21 +1130,18 @@ def build_position_health_message(h: dict) -> str:
     lb_fill  = min(10, int(lb_pct / 10))
     lb_bar   = "█" * lb_fill + "░" * (10 - lb_fill)
 
-    # ── Danger note ──────────────────────────────────────────────────────────
     danger_note = ""
     if h.get("eth_danger") or h.get("btc_danger"):
         legs = []
         if h.get("eth_danger"): legs.append("ETH")
         if h.get("btc_danger"): legs.append("BTC")
-        danger_note = f"\n🚨 *PERINGATAN: {'/'.join(legs)} mendekati liq price!*\n"
+        danger_note = f"\n🚨 *PERINGATAN: {'/'.join(legs)} mendekati harga likuidasi!*\n"
 
-    # ── Live indicator ───────────────────────────────────────────────────────
     live_tag = ""
     if PARADEX_LIVE_AVAILABLE and is_live_active():
         dr = " 🧪 DRYRUN" if live_settings.get("dryrun") else ""
-        live_tag = f"\n_🔴 Data di-sync langsung dari Paradex{dr}_\n"
+        live_tag = f"\n_🔴 Data disinkronkan langsung dari Paradex{dr}_\n"
 
-    # ── Notional & value now ─────────────────────────────────────────────────
     eth_notional  = h.get("eth_notional", 0)
     btc_notional  = h.get("btc_notional", 0)
     eth_value_now = abs(eth_qty or 0) * eth_p
@@ -1173,71 +1149,61 @@ def build_position_health_message(h: dict) -> str:
     eth_margin    = h.get("eth_margin", 0)
     btc_margin    = h.get("btc_margin", 0)
 
-    # ── Net P&L note ─────────────────────────────────────────────────────────
     eth_entry = pos_data.get("eth_entry_price", 0) or 0
     btc_entry = pos_data.get("btc_entry_price", 0) or 0
     net_note  = ""
     if eth_entry > 0 and btc_entry > 0:
-        eth_chg = (eth_p - eth_entry) / eth_entry * 100 if eth_qty and eth_qty < 0 else (eth_entry - eth_p) / eth_entry * 100
-        btc_chg = (btc_p - btc_entry) / btc_entry * 100 if btc_qty and btc_qty > 0 else (btc_entry - btc_p) / btc_entry * 100
         net_note = (
-            f"_💡 NET P&L adalah yang terpenting. "
-            f"Contoh: ETH {eth_chg:+.0f}% tapi net {_s(h['net_pnl'])}${h['net_pnl']:,.2f}._"
+            f"_💡 NET P&L adalah yang terpenting dalam pairs trade._"
         )
 
     return (
         f"🏥 *Position Health — {strat}*\n"
-        f"⏱️ Time in trade: *{h.get('time_label', 'N/A')}*\n"
+        f"⏱️ Waktu dalam trade: *{h.get('time_label', 'N/A')}*\n"
         f"💰 ETH: ${eth_p:,.2f} | BTC: ${btc_p:,.2f}\n"
         f"{live_tag}"
-        # ── ETH Leg ──────────────────────────────────────────────────────────
         f"\n*📊 ETH Leg ({eth_dir}):*\n"
         f"┌─────────────────────\n"
         f"│ Entry:    ${pos_data.get('eth_entry_price', 0):,.2f}\n"
         f"│ Qty:      {abs(eth_qty or 0):.4f} ETH\n"
         f"│ Leverage: {h.get('eth_lev', 1):.0f}x\n"
-        f"│ Notional: ${eth_notional:,.2f} → value now: ${eth_value_now:,.2f}\n"
+        f"│ Notional: ${eth_notional:,.2f} → nilai kini: ${eth_value_now:,.2f}\n"
         f"│ Margin:   ${eth_margin:,.2f}\n"
         f"│ UPnL: {_e(h['eth_pnl'])} {_s(h['eth_pnl'])}${h['eth_pnl']:,.2f} ({_s(h['eth_pnl_pct'])}{h['eth_pnl_pct']:.2f}%)\n"
         f"│ Liq: {eth_liq_s} {eth_liq_e} | {eth_dist_s}\n"
         f"└─────────────────────\n"
-        # ── BTC Leg ──────────────────────────────────────────────────────────
         f"\n*📊 BTC Leg ({btc_dir}):*\n"
         f"┌─────────────────────\n"
         f"│ Entry:    ${pos_data.get('btc_entry_price', 0):,.2f}\n"
         f"│ Qty:      {abs(btc_qty or 0):.6f} BTC\n"
         f"│ Leverage: {h.get('btc_lev', 1):.0f}x\n"
-        f"│ Notional: ${btc_notional:,.2f} → value now: ${btc_value_now:,.2f}\n"
+        f"│ Notional: ${btc_notional:,.2f} → nilai kini: ${btc_value_now:,.2f}\n"
         f"│ Margin:   ${btc_margin:,.2f}\n"
         f"│ UPnL: {_e(h['btc_pnl'])} {_s(h['btc_pnl'])}${h['btc_pnl']:,.2f} ({_s(h['btc_pnl_pct'])}{h['btc_pnl_pct']:.2f}%)\n"
         f"│ Liq: {btc_liq_s} {btc_liq_e} | {btc_dist_s}\n"
         f"└─────────────────────\n"
-        # ── Net ──────────────────────────────────────────────────────────────
-        f"\n*⚖️ Net Pairs:*\n"
+        f"\n*⚖️ Ringkasan Pairs:*\n"
         f"┌─────────────────────\n"
         f"│ Notional: ${h.get('total_notional', 0):,.2f}\n"
         f"│ Margin:   ${h.get('total_margin', 0):,.2f}\n"
-        f"│ Equity:   ${h.get('total_equity', 0):,.2f}\n"
+        f"│ Ekuitas:  ${h.get('total_equity', 0):,.2f}\n"
         f"│ Net UPnL: {_e(h['net_pnl'])} {_s(h['net_pnl'])}${h['net_pnl']:,.2f} ({_s(h['net_pnl_pct'])}{h['net_pnl_pct']:.2f}%)\n"
         f"└─────────────────────\n"
-        # ── Funding & Velocity ───────────────────────────────────────────────
         f"{funding_block}"
         f"{vel_block}"
-        # ── Margin health ────────────────────────────────────────────────────
-        f"*🛡️ Margin Health:*\n"
+        f"*🛡️ Kesehatan Margin:*\n"
         f"┌─────────────────────\n"
         f"│ Margin Ratio: {mr:.2f}%\n"
         f"│ {mr_bar} {h.get('health_emoji', '')} *{h.get('health_label', '')}*\n"
-        f"│ Liq Buffer: ${h.get('liq_buffer_usd', 0):,.2f} ({lb_pct:.1f}%)\n"
+        f"│ Buffer Liq: ${h.get('liq_buffer_usd', 0):,.2f} ({lb_pct:.1f}%)\n"
         f"│ {lb_bar} sebelum likuidasi\n"
         f"└─────────────────────\n"
         f"{danger_note}"
         f"\n{net_note}"
-        
     )
 
 # =============================================================================
-# ─── ENTRY READINESS ENGINE ──────────────────────────────────────────────────
+# Entry Readiness Engine
 # =============================================================================
 
 def build_entry_readiness(strategy, pct_r, curr_r, avg_r, ext):
@@ -1249,7 +1215,7 @@ def build_entry_readiness(strategy, pct_r, curr_r, avg_r, ext):
     gap_f   = float(gap_now) if gap_now is not None else 0.0
     gap_abs = abs(gap_f)
 
-    checks = []; warnings = []
+    checks = []
     correct_side = (gap_f >= et) if strategy == Strategy.S1 else (gap_f <= -et)
     if correct_side:
         checks.append((True,  "Gap di zona entry", f"Gap {gap_f:+.2f}% melewati ±{et}%"))
@@ -1258,7 +1224,7 @@ def build_entry_readiness(strategy, pct_r, curr_r, avg_r, ext):
 
     if pct_r is not None:
         ratio_ok = pct_r >= 60 if strategy == Strategy.S1 else pct_r <= 40
-        checks.append((ratio_ok, f"Ratio {pct_r}th percentile", f"{'OK' if ratio_ok else 'Belum ideal'}"))
+        checks.append((ratio_ok, f"Ratio {pct_r}th percentile", f"{'Baik' if ratio_ok else 'Belum ideal'}"))
     else:
         checks.append((None, "Ratio N/A", "Butuh lebih banyak history"))
 
@@ -1271,7 +1237,7 @@ def build_entry_readiness(strategy, pct_r, curr_r, avg_r, ext):
 
     dist_invalid = (it - gap_f) if strategy == Strategy.S1 else (gap_f - (-it))
     buffer_ok    = dist_invalid >= 0.5
-    checks.append((buffer_ok, "Buffer invalidation", f"{dist_invalid:.2f}% sebelum invalid ±{it}%"))
+    checks.append((buffer_ok, "Buffer invalidasi", f"{dist_invalid:.2f}% sebelum invalid ±{it}%"))
 
     true_count  = sum(1 for c in checks if c[0] is True)
     false_count = sum(1 for c in checks if c[0] is False)
@@ -1279,11 +1245,11 @@ def build_entry_readiness(strategy, pct_r, curr_r, avg_r, ext):
     score_pct   = true_count / total_valid * 100 if total_valid > 0 else 0
 
     if false_count == 0 and true_count >= 3:
-        v_e, verdict = "🟢", "READY TO ENTRY"
+        v_e, verdict = "🟢", "SIAP ENTRY"
     elif not correct_side or false_count >= 2:
         v_e, verdict = "🔴", "JANGAN ENTRY DULU"
     elif false_count <= 1 and true_count >= 2:
-        v_e, verdict = "🟡", "BISA ENTRY, TAPI HATI-HATI"
+        v_e, verdict = "🟡", "BISA ENTRY, TAPI BERHATI-HATI"
     else:
         v_e, verdict = "🟠", "TUNGGU KONFIRMASI"
 
@@ -1295,12 +1261,12 @@ def build_entry_readiness(strategy, pct_r, curr_r, avg_r, ext):
     return (
         f"*── Entry Readiness: {strategy.value} ──*\n"
         f"{v_e} *{verdict}*\n"
-        f"Score: {true_count}/{total_valid} ✅ ({score_pct:.0f}%)\n"
+        f"Skor: {true_count}/{total_valid} ✅ ({score_pct:.0f}%)\n"
         f"\n{checklist}"
     )
 
 # =============================================================================
-# Formatting & Helpers
+# Helpers & Formatter
 # =============================================================================
 def format_value(value) -> str:
     fv = float(value)
@@ -1336,7 +1302,7 @@ def _build_pnl_section(leg_e, leg_b, net, emoji=""):
         usd_e = leg_e / 100 * half; usd_b = leg_b / 100 * half; usd_net = usd_e + usd_b
         if active_strategy == Strategy.S1:
             return (
-                f"\n*Estimasi P&L pairs:*\n"
+                f"\n*Estimasi P&L Pairs:*\n"
                 f"┌─────────────────────\n"
                 f"│ Long BTC:  {leg_b:+.2f}% (${usd_b:+.2f})\n"
                 f"│ Short ETH: {leg_e:+.2f}% (${usd_e:+.2f})\n"
@@ -1345,7 +1311,7 @@ def _build_pnl_section(leg_e, leg_b, net, emoji=""):
             )
         else:
             return (
-                f"\n*Estimasi P&L pairs:*\n"
+                f"\n*Estimasi P&L Pairs:*\n"
                 f"┌─────────────────────\n"
                 f"│ Long ETH:  {leg_e:+.2f}% (${usd_e:+.2f})\n"
                 f"│ Short BTC: {leg_b:+.2f}% (${usd_b:+.2f})\n"
@@ -1353,11 +1319,11 @@ def _build_pnl_section(leg_e, leg_b, net, emoji=""):
                 f"└─────────────────────\n\n"
             )
     elif net is not None:
-        return f"\n_Net gap movement: {net:+.2f}%_\n\n"
+        return f"\n_Pergerakan gap net: {net:+.2f}%_\n\n"
     return ""
 
 # =============================================================================
-# ─── MESSAGE BUILDERS ────────────────────────────────────────────────────────
+# Message Builders
 # =============================================================================
 
 def build_peak_watch_message(strategy, gap):
@@ -1369,9 +1335,9 @@ def build_peak_watch_message(strategy, gap):
         direction = "Long ETH / Short BTC"
         reason    = f"ETH dumping lebih dalam dari BTC ({lb})"
     return (
-        f"………\nTerdeteksi sinyal yang menarik.\n\n"
+        f"………\nSinyal menarik terdeteksi.\n\n"
         f"_{reason}_\nRencana: *{direction}*\nGap sekarang: *{format_value(gap)}%*\n\n"
-        f"Tapi Bot tidak akan terburu-buru.\nKita pantau puncaknya dulu sebelum masuk ya  ⚡"
+        f"Bot akan menunggu konfirmasi puncak sebelum masuk. ⚡"
     )
 
 def build_entry_message(strategy, btc_ret, eth_ret, gap, peak, btc_now, eth_now, btc_lb, eth_lb, is_direct=False):
@@ -1445,7 +1411,7 @@ def build_entry_message(strategy, btc_ret, eth_ret, gap, peak, btc_now, eth_now,
                 f"│ Short BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n└─────────────────────\n"
             )
     else:
-        sizing_section = "\n_💡 `/capital <modal>` untuk sizing guide._\n"
+        sizing_section = "\n_💡 Gunakan `/capital <modal>` untuk panduan sizing._\n"
 
     peak_line     = f"│ Peak:     {peak:+.2f}%\n" if not is_direct and peak else ""
     direct_tag    = " _(Peak OFF)_\n" if is_direct else "\n"
@@ -1454,31 +1420,30 @@ def build_entry_message(strategy, btc_ret, eth_ret, gap, peak, btc_now, eth_now,
         if not is_direct else ""
     )
 
-    # [NEW] Live trading indicator
     live_line = ""
     if PARADEX_LIVE_AVAILABLE and is_live_active():
         lev = float(live_settings.get("leverage", 1))
         otype = live_settings.get("order_type", "MARKET")
-        live_line = f"\n🔴 *Live trading AKTIF — order akan dikirim ke Paradex ({otype}, {lev:.0f}x)*\n"
+        live_line = f"\n🔴 *Live trading AKTIF — order dikirim ke Paradex ({otype}, {lev:.0f}x)*\n"
 
     return (
         f"Sinyal yang ditunggu sudah muncul! ⚡\n"
-        f"🚨 *ENTRY SIGNAL: {strategy.value}*{direct_tag}"
+        f"🚨 *SINYAL ENTRY: {strategy.value}*{direct_tag}"
         f"📈 *{direction}*\n"
         f"{live_line}\n"
-        f"*── 1. Gap Analysis ({lb}) ──*\n"
+        f"*── 1. Analisis Gap ({lb}) ──*\n"
         f"┌─────────────────────\n"
         f"│ BTC:    {format_value(btc_ret)}%\n│ ETH:    {format_value(eth_ret)}%\n"
         f"│ Gap:    *{format_value(gap)}%*\n{peak_line}"
         f"│ Driver: {driver_emoji} *{driver}* — {driver_explain}\n"
         f"└─────────────────────\n"
         f"_💡 {conv_hint}_\n\n"
-        f"*── 2. ETH/BTC Ratio ──*\n"
+        f"*── 2. Rasio ETH/BTC ──*\n"
         f"┌─────────────────────\n"
-        f"│ Sekarang: {ratio_str} | {lb} avg: {avg_str}\n"
-        f"│ Percentile: *{pct_str}* | {stars}\n"
+        f"│ Sekarang: {ratio_str} | {lb} rata-rata: {avg_str}\n"
+        f"│ Persentil: *{pct_str}* | {stars}\n"
         f"│ _{conviction}_\n└─────────────────────\n\n"
-        f"*── 3. Market Regime ──*\n"
+        f"*── 3. Regime Pasar ──*\n"
         f"┌─────────────────────\n"
         f"│ {reg['emoji']} *{reg['regime']}* {reg['strength']}\n│ {regime_fit}\n"
         f"└─────────────────────\n\n"
@@ -1502,10 +1467,10 @@ def build_exit_message(btc_ret, eth_ret, gap, confirm_note=""):
     conf_line   = f"_{confirm_note}_\n" if confirm_note else ""
     return (
         f"Sinyal exit terdeteksi.\n✅ *EXIT — Gap Konvergen!*\n{conf_line}\n"
-        f"*{lb} Change:*\n┌─────────────────────\n"
+        f"*Perubahan {lb}:*\n┌─────────────────────\n"
         f"│ BTC: {format_value(btc_ret)}% | ETH: {format_value(eth_ret)}% | Gap: *{format_value(gap)}%*\n"
         f"└─────────────────────\n{net_section}"
-        f"Saatnya pertimbangkan penutupan posisi. Bot terus memantau. ⚡🔍"
+        f"Pertimbangkan untuk menutup posisi. Bot terus memantau. ⚡"
     )
 
 def build_tp_message(btc_ret, eth_ret, gap, entry_gap, tp_level, eth_target):
@@ -1516,7 +1481,7 @@ def build_tp_message(btc_ret, eth_ret, gap, entry_gap, tp_level, eth_target):
     net_section = _build_pnl_section(leg_e, leg_b, net, emoji="🎉")
     return (
         f"Target profit tercapai! ✨\n🎯 *TAKE PROFIT*\n\n"
-        f"*{lb} Change:*\n┌─────────────────────\n"
+        f"*Perubahan {lb}:*\n┌─────────────────────\n"
         f"│ BTC: {format_value(btc_ret)}% | ETH: {format_value(eth_ret)}%\n"
         f"│ Gap: *{format_value(gap)}%* | TP: {tp_level:+.2f}% | ETH: {eth_str}\n"
         f"└─────────────────────\n{net_section}Posisi ditutup dengan hasil positif. ⚡"
@@ -1532,9 +1497,9 @@ def build_trailing_sl_message(btc_ret, eth_ret, gap, entry_gap, best_gap, sl_lev
     net_section = _build_pnl_section(leg_e, leg_b, net)
     return (
         f"………\n⛔ *TRAILING STOP LOSS*\n\n"
-        f"*{lb} Change:*\n┌─────────────────────\n"
+        f"*Perubahan {lb}:*\n┌─────────────────────\n"
         f"│ Gap: {format_value(gap)}% | Best: {best_gap:+.2f}% | TSL: {sl_level:+.2f}% → ETH {eth_sl_str}\n"
-        f"│ Terkunci: ~{profit_locked:.2f}%\n└─────────────────────\n"
+        f"│ Profit terkunci: ~{profit_locked:.2f}%\n└─────────────────────\n"
         f"{net_section}Bot kembali ke mode SCAN. ⚡"
     )
 
@@ -1544,11 +1509,11 @@ def build_invalidation_message(strategy, btc_ret, eth_ret, gap):
     leg_e, leg_b, net = calc_net_pnl(strategy, gap_f)
     net_section = _build_pnl_section(leg_e, leg_b, net)
     return (
-        f"………\n⚠️ *INVALIDATION: {strategy.value}*\n\n"
+        f"………\n⚠️ *INVALIDASI: {strategy.value}*\n\n"
         f"Gap melebar melewati batas. Disarankan untuk cut posisi.\n\n"
-        f"*{lb} Change:*\n┌─────────────────────\n"
+        f"*Perubahan {lb}:*\n┌─────────────────────\n"
         f"│ BTC: {format_value(btc_ret)}% | ETH: {format_value(eth_ret)}% | Gap: {format_value(gap)}%\n"
-        f"└─────────────────────\n{net_section}Bot memulai scan ulang dari awal. ⚡"
+        f"└─────────────────────\n{net_section}Bot memulai scan ulang. ⚡"
     )
 
 def build_peak_cancelled_message(strategy, gap):
@@ -1559,7 +1524,6 @@ def build_peak_cancelled_message(strategy, gap):
 
 def build_heartbeat_message() -> str:
     lb          = get_lookback_label()
-    now         = datetime.now(timezone.utc)
     btc_str     = f"${float(scan_stats['last_btc_price']):,.2f} ({format_value(scan_stats['last_btc_ret'])}%)" if scan_stats.get("last_btc_price") else "N/A"
     eth_str     = f"${float(scan_stats['last_eth_price']):,.2f} ({format_value(scan_stats['last_eth_ret'])}%)" if scan_stats.get("last_eth_price") else "N/A"
     gap_str     = f"{format_value(scan_stats['last_gap'])}%" if scan_stats.get("last_gap") is not None else "N/A"
@@ -1569,31 +1533,28 @@ def build_heartbeat_message() -> str:
     peak_line   = f"│ Peak: {peak_gap:+.2f}%\n" if current_mode == Mode.PEAK_WATCH and peak_gap is not None else ""
 
     curr_r, _, _, _, pct_r = calc_ratio_percentile()
-    ratio_line = f"ETH/BTC: {curr_r:.5f} | Percentile: {pct_r}th\n" if curr_r and pct_r is not None else ""
+    ratio_line = f"ETH/BTC: {curr_r:.5f} | Persentil: {pct_r}th\n" if curr_r and pct_r is not None else ""
 
     track_section = ""
     if current_mode == Mode.TRACK and entry_gap_value is not None and trailing_gap_best is not None:
         et  = settings["exit_threshold"]; sl = settings["sl_pct"]
         tpl = et if active_strategy == Strategy.S1 else -et
         tsl = trailing_gap_best + sl if active_strategy == Strategy.S1 else trailing_gap_best - sl
-        eth_tp, _ = calc_tp_target_price(active_strategy)
-        eth_sl, _ = calc_eth_price_at_gap(tsl)
         gap_now   = float(scan_stats["last_gap"]) if scan_stats.get("last_gap") is not None else entry_gap_value
         _, _, net = calc_net_pnl(active_strategy, gap_now)
         he, hd    = get_pairs_health(active_strategy, gap_now)
         track_section = (
             f"\n*Posisi aktif {active_strategy.value}:*\n"
             f"┌─────────────────────\n"
-            f"│ Entry: {entry_gap_value:+.2f}% | Now: {gap_str} | Best: {trailing_gap_best:+.2f}%\n"
+            f"│ Entry: {entry_gap_value:+.2f}% | Sekarang: {gap_str} | Terbaik: {trailing_gap_best:+.2f}%\n"
             f"│ TP: {tpl:+.2f}% | TSL: {tsl:+.2f}%\n"
             f"│ Net P&L: {net:+.2f}% | {he} {hd}\n"
             f"└─────────────────────\n"
         )
 
-    # [NEW] Live status in heartbeat
     live_line = ""
     if PARADEX_LIVE_AVAILABLE and is_live_active():
-        live_line = f"*🔴 Live:* ON | "
+        live_line = f"*🔴 Live:* AKTIF | "
 
     last_r = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
     return (
@@ -1636,7 +1597,7 @@ def parse_iso_timestamp(ts_str):
         dt = datetime.fromisoformat(ts_str)
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except (ValueError, AttributeError) as e:
-        logger.error(f"Failed to parse timestamp '{ts_str}': {e}")
+        logger.error(f"Gagal parse timestamp '{ts_str}': {e}")
         return None
 
 def fetch_prices():
@@ -1645,20 +1606,20 @@ def fetch_prices():
         resp = requests.get(url, timeout=30); resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as e:
-        logger.error(f"API request failed: {e}")
+        logger.error(f"API request gagal: {e}")
         return None
 
     listings = data.get("listings", [])
     btc_data = next((l for l in listings if l.get("ticker", "").upper() == "BTC"), None)
     eth_data = next((l for l in listings if l.get("ticker", "").upper() == "ETH"), None)
     if not btc_data or not eth_data:
-        logger.warning("Missing BTC or ETH data"); return None
+        logger.warning("Data BTC atau ETH tidak ditemukan"); return None
 
     try:
         btc_price = Decimal(btc_data["mark_price"])
         eth_price = Decimal(eth_data["mark_price"])
     except (KeyError, InvalidOperation) as e:
-        logger.error(f"Invalid price: {e}"); return None
+        logger.error(f"Harga tidak valid: {e}"); return None
 
     btc_upd = parse_iso_timestamp(btc_data.get("quotes", {}).get("updated_at", ""))
     eth_upd = parse_iso_timestamp(eth_data.get("quotes", {}).get("updated_at", ""))
@@ -1720,7 +1681,6 @@ def check_sltp(gap_float, btc_ret, eth_ret, gap):
         if gap_float <= et:
             eth_target, _ = calc_tp_target_price(Strategy.S1)
             send_alert(build_tp_message(btc_ret, eth_ret, gap, entry_gap_value, et, eth_target))
-            # [NEW] Live close on TP
             if PARADEX_LIVE_AVAILABLE and is_live_active():
                 exec_msg = live_close_or_sim(active_strategy.value, float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TP", sim_fn=None)
                 if exec_msg: send_alert(exec_msg)
@@ -1765,7 +1725,7 @@ def check_sltp(gap_float, btc_ret, eth_ret, gap):
     return False
 
 # =============================================================================
-# ── [NEW] Sync pos_data dari Paradex setelah live open ───────────────────────
+# Sinkronisasi pos_data dari Paradex setelah live open
 # =============================================================================
 def _sync_pos_from_paradex(strategy: str):
     try:
@@ -1789,12 +1749,12 @@ def _sync_pos_from_paradex(strategy: str):
         pos_data["strategy"] = strategy
         pos_data["set_at"]   = datetime.now(timezone.utc).isoformat()
         save_pos_data()
-        logger.info(f"pos_data synced from Paradex: {strategy}")
+        logger.info(f"pos_data disinkronkan dari Paradex: {strategy}")
     except Exception as e:
         logger.warning(f"_sync_pos_from_paradex gagal: {e}")
 
 # =============================================================================
-# State Machine — evaluate_and_transition
+# State Machine
 # =============================================================================
 def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth_lb):
     global current_mode, active_strategy, peak_gap, peak_strategy
@@ -1832,7 +1792,6 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
             is_direct=is_direct,
         ))
 
-        # ── [NEW] Live / Sim open ────────────────────────────────────────────
         if PARADEX_LIVE_AVAILABLE and is_live_active():
             exec_msg = live_open_or_sim(strategy.value, float(btc_now), float(eth_now), sim_fn=None)
             if exec_msg:
@@ -1842,11 +1801,10 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
             sim_msg = sim_open_position(strategy, float(btc_now), float(eth_now))
             if sim_msg:
                 send_alert(sim_msg)
-        # ────────────────────────────────────────────────────────────────────
 
         scan_stats["signals_sent"] += 1
 
-    # ── SCAN ──────────────────────────────────────────────────────────────────
+    # SCAN
     if current_mode == Mode.SCAN:
         if gap_float >= entry_thresh:
             if peak_enabled:
@@ -1861,9 +1819,9 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
             else:
                 do_entry(Strategy.S2, is_direct=True)
         else:
-            logger.debug(f"SCAN: No signal. Gap: {gap_float:.2f}%")
+            logger.debug(f"SCAN: Tidak ada sinyal. Gap: {gap_float:.2f}%")
 
-    # ── PEAK_WATCH ────────────────────────────────────────────────────────────
+    # PEAK_WATCH
     elif current_mode == Mode.PEAK_WATCH:
         if peak_strategy == Strategy.S1:
             if gap_float > peak_gap:
@@ -1882,7 +1840,7 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
             elif gap_float - peak_gap >= peak_reversal:
                 do_entry(Strategy.S2, is_direct=False)
 
-    # ── TRACK ─────────────────────────────────────────────────────────────────
+    # TRACK
     elif current_mode == Mode.TRACK:
         if check_sltp(gap_float, btc_ret, eth_ret, gap):
             return
@@ -1916,7 +1874,6 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
                     confirm_note += f" | buffer +{confirm_buffer}%"
                 send_alert(build_exit_message(btc_ret, eth_ret, gap, confirm_note=confirm_note))
 
-                # ── [NEW] Live / Sim close — EXIT ────────────────────────────
                 if PARADEX_LIVE_AVAILABLE and is_live_active():
                     exec_msg = live_close_or_sim(
                         active_strategy.value, float(btc_now), float(eth_now),
@@ -1926,7 +1883,6 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
                 else:
                     sim_msg = sim_close_position(float(btc_now), float(eth_now), reason="EXIT")
                     if sim_msg: send_alert(sim_msg)
-                # ─────────────────────────────────────────────────────────────
 
                 logger.info(f"EXIT {active_strategy.value}. Gap: {gap_float:.2f}%")
                 reset_to_scan()
@@ -1935,80 +1891,64 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
                 if exit_confirm_count == 1 and confirm_scans > 1:
                     remaining = max(1, confirm_scans) - exit_confirm_count
                     send_alert(
-                        f"⏳ *Pre-exit: Gap menyentuh TP zone*\n"
+                        f"⏳ *Pre-exit: Gap menyentuh zona TP*\n"
                         f"Gap: {gap_float:+.2f}% | Menunggu {remaining} scan lagi\n"
                         f"_Menunggu konfirmasi exit..._"
                     )
         else:
             if exit_confirm_count > 0:
-                logger.info(f"Exit zone lost. Reset confirm ({exit_confirm_count}→0).")
+                logger.info(f"Zona exit hilang. Reset konfirmasi ({exit_confirm_count}→0).")
                 exit_confirm_count = 0
 
-        # ── Invalidation S1 ───────────────────────────────────────────────────
         if active_strategy == Strategy.S1 and gap_float >= invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S1, btc_ret, eth_ret, gap))
-
-            # ── [NEW] Live / Sim close — INVALID ─────────────────────────────
             if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(
-                    active_strategy.value, float(btc_now), float(eth_now),
-                    reason="INVALID", sim_fn=None,
-                )
+                exec_msg = live_close_or_sim(active_strategy.value, float(btc_now), float(eth_now), reason="INVALID", sim_fn=None)
                 if exec_msg: send_alert(exec_msg)
             else:
                 sim_msg = sim_close_position(float(btc_now), float(eth_now), reason="INVALID")
                 if sim_msg: send_alert(sim_msg)
-            # ─────────────────────────────────────────────────────────────────
-
             reset_to_scan(); return
 
-        # ── Invalidation S2 ───────────────────────────────────────────────────
         if active_strategy == Strategy.S2 and gap_float <= -invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S2, btc_ret, eth_ret, gap))
-
-            # ── [NEW] Live / Sim close — INVALID ─────────────────────────────
             if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(
-                    active_strategy.value, float(btc_now), float(eth_now),
-                    reason="INVALID", sim_fn=None,
-                )
+                exec_msg = live_close_or_sim(active_strategy.value, float(btc_now), float(eth_now), reason="INVALID", sim_fn=None)
                 if exec_msg: send_alert(exec_msg)
             else:
                 sim_msg = sim_close_position(float(btc_now), float(eth_now), reason="INVALID")
                 if sim_msg: send_alert(sim_msg)
-            # ─────────────────────────────────────────────────────────────────
-
             reset_to_scan(); return
 
         logger.debug(f"TRACK {active_strategy.value}: Gap {gap_float:.2f}%")
 
 # =============================================================================
-# ─── COMMAND HANDLERS ────────────────────────────────────────────────────────
+# Command Handlers
 # =============================================================================
 
 def handle_settings_command(reply_chat):
-    hb     = settings["heartbeat_minutes"]; hb_str = f"{hb} menit" if hb > 0 else "Off"
-    rr     = settings["redis_refresh_minutes"]; rr_str = f"{rr} menit" if rr > 0 else "Off"
+    hb     = settings["heartbeat_minutes"]; hb_str = f"{hb} menit" if hb > 0 else "Nonaktif"
+    rr     = settings["redis_refresh_minutes"]; rr_str = f"{rr} menit" if rr > 0 else "Nonaktif"
     peak_s = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "Belum diset"
     eth_sr  = settings["eth_size_ratio"]; btc_sr = 100.0 - eth_sr
     ec_s   = int(settings["exit_confirm_scans"]); ec_b = float(settings["exit_confirm_buffer"]); ec_p = float(settings["exit_pnl_gate"])
-    live_s = "🟢 ON" if is_live_active() else "🔴 OFF"
+    live_s = "🟢 AKTIF" if is_live_active() else "🔴 OFF"
     send_reply(
         f"⚙️ *Konfigurasi Bot Saat Ini*\n\n"
-        f"📊 Scan Interval:  {settings['scan_interval']}s\n"
-        f"🕐 Lookback:       {settings['lookback_hours']}h\n"
-        f"💓 Heartbeat:      {hb_str}\n"
-        f"🔄 Redis Refresh:  {rr_str}\n"
-        f"📈 Entry:          ±{settings['entry_threshold']}%\n"
-        f"📉 Exit/TP:        ±{settings['exit_threshold']}%\n"
-        f"⚠️ Invalidation:   ±{settings['invalidation_threshold']}%\n"
-        f"🔍 Peak Mode:      {peak_s} ({settings['peak_reversal']}% reversal)\n"
-        f"🛑 Trailing SL:    {settings['sl_pct']}%\n"
-        f"🛡️ Exit Confirm:   {ec_s}x | buffer {ec_b:.2f}% | P&L gate {ec_p:.2f}%\n"
-        f"📐 Size Ratio:     ETH {eth_sr:.0f}% / BTC {btc_sr:.0f}%\n"
-        f"💰 Modal:          {cap_str}\n"
-        f"🔴 Live Trading:   {live_s}\n\n"
+        f"📊 Interval Scan:   {settings['scan_interval']}s\n"
+        f"🕐 Lookback:        {settings['lookback_hours']}h\n"
+        f"💓 Heartbeat:       {hb_str}\n"
+        f"🔄 Redis Refresh:   {rr_str}\n"
+        f"📈 Entry:           ±{settings['entry_threshold']}%\n"
+        f"📉 Exit/TP:         ±{settings['exit_threshold']}%\n"
+        f"⚠️ Invalidasi:      ±{settings['invalidation_threshold']}%\n"
+        f"🔍 Peak Mode:       {peak_s} ({settings['peak_reversal']}% reversal)\n"
+        f"🛑 Trailing SL:     {settings['sl_pct']}%\n"
+        f"🛡️ Exit Confirm:    {ec_s}x | buffer {ec_b:.2f}% | P&L gate {ec_p:.2f}%\n"
+        f"📐 Rasio Sizing:    ETH {eth_sr:.0f}% / BTC {btc_sr:.0f}%\n"
+        f"💰 Modal:           {cap_str}\n"
+        f"🔴 Live Trading:    {live_s}\n\n"
         f"_Ketik `/help` untuk daftar perintah lengkap._",
         reply_chat,
     )
@@ -2019,7 +1959,7 @@ def handle_status_command(reply_chat):
     ready      = f"✅ {hours_data:.1f}h" if hours_data >= lookback else f"⏳ {hours_data:.1f}h / {lookback}h"
     peak_s     = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     last_r     = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
-    live_s     = "🟢 ON" if is_live_active() else "🔴 OFF"
+    live_s     = "🟢 AKTIF" if is_live_active() else "🔴 OFF"
 
     scan_section = ""
     if current_mode == Mode.SCAN:
@@ -2030,7 +1970,7 @@ def handle_status_command(reply_chat):
             drv, drv_e, drv_ex = analyze_gap_driver(float(btc_r), float(eth_r), float(gap_now))
             driver_line = f"│ Driver: {drv_e} {drv} — _{drv_ex}_\n"
         curr_r, _, _, _, pct_r = calc_ratio_percentile()
-        ratio_line = f"│ Ratio: {curr_r:.5f} ({pct_r}th pct)\n" if curr_r and pct_r is not None else ""
+        ratio_line = f"│ Rasio: {curr_r:.5f} ({pct_r}th pct)\n" if curr_r and pct_r is not None else ""
         scan_section = (
             f"\n*Gap sekarang ({lookback}h):*\n┌─────────────────────\n"
             f"│ BTC: {format_value(btc_r)}% | ETH: {format_value(eth_r)}%\n"
@@ -2048,20 +1988,20 @@ def handle_status_command(reply_chat):
         he, hd = get_pairs_health(active_strategy, gap_now)
         track_section = (
             f"\n*Posisi aktif {active_strategy.value}:*\n┌─────────────────────\n"
-            f"│ Entry: {entry_gap_value:+.2f}% | Now: {format_value(scan_stats['last_gap'])}% | Best: {trailing_gap_best:+.2f}%\n"
+            f"│ Entry: {entry_gap_value:+.2f}% | Sekarang: {format_value(scan_stats['last_gap'])}% | Terbaik: {trailing_gap_best:+.2f}%\n"
             f"│ TP: {tpl:+.2f}% | TSL: {tsl:+.2f}%\n"
             f"│ Net P&L: {net:+.2f}% | {he} {hd}\n└─────────────────────\n"
         )
 
     send_reply(
         f"📊 *Status Bot*\n\nMode: *{current_mode.value}* | Peak: {peak_s} | Live: {live_s}\n"
-        f"{scan_section}{track_section}History: {ready} | Redis: {last_r} 🔒\n",
+        f"{scan_section}{track_section}Data: {ready} | Redis: {last_r} 🔒\n",
         reply_chat,
     )
 
 def handle_pnl_command(reply_chat):
     if current_mode != Mode.TRACK or active_strategy is None or entry_gap_value is None:
-        send_reply("Belum ada posisi aktif sekarang.\nBot masih mode SCAN", reply_chat)
+        send_reply("Belum ada posisi aktif saat ini.\nBot masih dalam mode SCAN.", reply_chat)
         return
     gap_now = float(scan_stats["last_gap"]) if scan_stats.get("last_gap") is not None else entry_gap_value
     leg_e, leg_b, net = calc_net_pnl(active_strategy, gap_now)
@@ -2078,20 +2018,20 @@ def handle_pnl_command(reply_chat):
                         f"│ Short BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
                         f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})*\n")
     else:
-        pnl_body = f"│ Net gap movement: *{net:+.2f}%*\n" if net else "│ Data tidak cukup\n"
+        pnl_body = f"│ Pergerakan gap net: *{net:+.2f}%*\n" if net else "│ Data tidak cukup\n"
 
     send_reply(
         f"📊 *Net P&L — Pairs Trade*\nPosisi: *{active_strategy.value}* | Entry: {entry_gap_value:+.2f}%\n"
-        f"Gap now: *{format_value(scan_stats['last_gap'])}%*\n\n"
+        f"Gap sekarang: *{format_value(scan_stats['last_gap'])}%*\n\n"
         f"*Estimasi P&L:*\n┌─────────────────────\n{pnl_body}└─────────────────────\n\n"
-        f"*Health:* {he} {hd}\n\n_💡 Pairs trade: nilai dari NET, bukan per leg._",
+        f"*Kesehatan:* {he} {hd}\n\n_💡 Dalam pairs trade, nilai NET yang paling penting._",
         reply_chat,
     )
 
 def handle_ratio_command(reply_chat):
     curr_r, avg_r, hi_r, lo_r, pct_r = calc_ratio_percentile()
     if curr_r is None:
-        send_reply(f"Bot belum punya cukup data. Sekarang: {len(price_history)} points.", reply_chat)
+        send_reply(f"Data belum mencukupi. Saat ini: {len(price_history)} titik data.", reply_chat)
         return
     window = settings["ratio_window_days"]
     stars_s1, _ = get_ratio_conviction(Strategy.S1, pct_r)
@@ -2101,7 +2041,7 @@ def handle_ratio_command(reply_chat):
     elif pct_r <= 40: signal = "🟡 *ETH relatif murah* — setup S2 cukup bagus"
     elif pct_r >= 80: signal = "🔴 *ETH sangat mahal vs BTC* — momentum S1 kuat"
     elif pct_r >= 60: signal = "🟠 *ETH relatif mahal* — setup S1 cukup bagus"
-    else:             signal = "⚪ *Neutral* — ETH di area tengah vs BTC"
+    else:             signal = "⚪ *Netral* — ETH di area tengah vs BTC"
     bar_pos  = min(10, int(pct_r / 10))
     bar      = "─" * bar_pos + "●" + "─" * (10 - bar_pos)
     detail_s1 = _build_conviction_detail(Strategy.S1, stars_s1, pct_r, curr_r, avg_r, hi_r, lo_r, ext)
@@ -2109,13 +2049,13 @@ def handle_ratio_command(reply_chat):
     ready_s1  = build_entry_readiness(Strategy.S1, pct_r, curr_r, avg_r, ext)
     ready_s2  = build_entry_readiness(Strategy.S2, pct_r, curr_r, avg_r, ext)
     send_reply(
-        f"📈 *ETH/BTC Ratio Monitor*\n\n"
-        f"┌─────────────────────\n│ Sekarang: {curr_r:.5f}\n│ {window}d avg: {avg_r:.5f}\n"
-        f"│ {window}d high: {hi_r:.5f}\n│ {window}d low: {lo_r:.5f}\n│ Percentile: *{pct_r}th*\n└─────────────────────\n\n"
+        f"📈 *Monitor Rasio ETH/BTC*\n\n"
+        f"┌─────────────────────\n│ Sekarang: {curr_r:.5f}\n│ Rata-rata {window}d: {avg_r:.5f}\n"
+        f"│ Tertinggi {window}d: {hi_r:.5f}\n│ Terendah {window}d: {lo_r:.5f}\n│ Persentil: *{pct_r}th*\n└─────────────────────\n\n"
         f"`[lo]─{bar}─[hi]`\n_{signal}_\n\n"
         f"──────────────────────\n{detail_s1}\n\n──────────────────────\n{detail_s2}\n\n"
         f"══════════════════════\n{ready_s1}\n══════════════════════\n{ready_s2}\n\n"
-        f"_Berdasarkan {len(price_history)} data point._",
+        f"_Berdasarkan {len(price_history)} titik data._",
         reply_chat,
     )
 
@@ -2128,11 +2068,11 @@ def handle_analysis_command(reply_chat):
     reg = detect_market_regime()
     def _pct(v): return f"{v:+.2f}%" if v is not None else "N/A"
     reg_block = (
-        f"*🌍 Market Regime:*\n┌─────────────────────\n"
+        f"*🌍 Regime Pasar:*\n┌─────────────────────\n"
         f"│ {reg['emoji']} *{reg['regime']}* — {reg['strength']}\n│ _{reg['description']}_\n│\n"
-        f"│         BTC        ETH\n│ 1h: {_pct(reg['btc_1h']):>9}  {_pct(reg['eth_1h'])}\n"
-        f"│ 4h: {_pct(reg['btc_4h']):>9}  {_pct(reg['eth_4h'])}\n│ 24h:{_pct(reg['btc_24h']):>9}  {_pct(reg['eth_24h'])}\n"
-        f"│ Vol: {reg['volatility']}\n└─────────────────────\n_{reg['implications']}_\n"
+        f"│         BTC        ETH\n│ 1j: {_pct(reg['btc_1h']):>9}  {_pct(reg['eth_1h'])}\n"
+        f"│ 4j: {_pct(reg['btc_4h']):>9}  {_pct(reg['eth_4h'])}\n│ 24j:{_pct(reg['btc_24h']):>9}  {_pct(reg['eth_24h'])}\n"
+        f"│ Volatilitas: {reg['volatility']}\n└─────────────────────\n_{reg['implications']}_\n"
     )
     curr_r, _, _, _, pct_r = calc_ratio_percentile()
     ratio_str = f"{curr_r:.5f} ({pct_r}th pct)" if curr_r else "N/A"
@@ -2148,11 +2088,11 @@ def handle_analysis_command(reply_chat):
     else:
         cand_str = "💤 Belum ada kandidat"; stars, cv = "—", "—"
     send_reply(
-        f"🧠 *Full Market Analysis*\n\n{reg_block}\n"
+        f"🧠 *Analisis Pasar Lengkap*\n\n{reg_block}\n"
         f"*📊 Gap ({lb}):*\n┌─────────────────────\n│ BTC: {format_value(btc_r)}% | ETH: {format_value(eth_r)}%\n"
         f"│ Gap: *{format_value(gap_now)}%* | Driver: {drv_e} *{drv}*\n└─────────────────────\n{gap_status}\n\n"
-        f"*📈 ETH/BTC Ratio:* {ratio_str}\n\n*Setup:*\n{cand_str}\nConviction: {stars} — _{cv}_\n\n"
-        f"Mode: *{current_mode.value}* | Live: {'🟢 ON' if is_live_active() else '🔴 OFF'}\n"
+        f"*📈 Rasio ETH/BTC:* {ratio_str}\n\n*Setup:*\n{cand_str}\nConviction: {stars} — _{cv}_\n\n"
+        f"Mode: *{current_mode.value}* | Live: {'🟢 AKTIF' if is_live_active() else '🔴 OFF'}\n"
         f"_Gunakan `/ratio` untuk detail, `/pnl` untuk P&L._",
         reply_chat,
     )
@@ -2160,43 +2100,43 @@ def handle_analysis_command(reply_chat):
 def handle_capital_command(args, reply_chat):
     if not args:
         cap = settings["capital"]
-        send_reply(f"💰 *Modal:* ${cap:,.0f}\nUsage: `/capital <jumlah USD>`", reply_chat)
+        send_reply(f"💰 *Modal:* ${cap:,.0f}\nPenggunaan: `/capital <jumlah USD>`", reply_chat)
         return
     try:
         val = float(args[0])
         if val < 0 or val > 10_000_000:
-            send_reply("Harus antara $0–$10,000,000.", reply_chat); return
+            send_reply("Modal harus antara $0 – $10,000,000.", reply_chat); return
         settings["capital"] = val
-        send_reply(f"💰 Modal *${val:,.0f}* sudah Bot simpan", reply_chat)
+        send_reply(f"💰 Modal *${val:,.0f}* berhasil disimpan.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_sizeratio_command(args, reply_chat):
     curr_eth = settings["eth_size_ratio"]; curr_btc = 100.0 - curr_eth
     if not args:
         send_reply(
-            f"📐 *Sizing Ratio*\nETH leg: *{curr_eth:.0f}%* | BTC leg: *{curr_btc:.0f}%*\n"
-            f"Usage: `/sizeratio <eth_pct>` — contoh: `/sizeratio 60`",
+            f"📐 *Rasio Sizing*\nLeg ETH: *{curr_eth:.0f}%* | Leg BTC: *{curr_btc:.0f}%*\n"
+            f"Penggunaan: `/sizeratio <eth_pct>` — contoh: `/sizeratio 60`",
             reply_chat,
         ); return
     try:
         val = float(args[0])
         if not (10.0 <= val <= 90.0):
-            send_reply("Range harus 10–90%.", reply_chat); return
+            send_reply("Rentang harus 10–90%.", reply_chat); return
         settings["eth_size_ratio"] = val
-        send_reply(f"✅ ETH leg: *{val:.0f}%* / BTC leg: *{100-val:.0f}%*", reply_chat)
+        send_reply(f"✅ Leg ETH: *{val:.0f}%* / Leg BTC: *{100-val:.0f}%*", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_peak_command(args, reply_chat):
     peak_s = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     if not args:
-        send_reply(f"🔍 *Peak Watch:* {peak_s} | Reversal: *{settings['peak_reversal']}%*\nUsage: `/peak on|off|<nilai reversal>`", reply_chat)
+        send_reply(f"🔍 *Peak Watch:* {peak_s} | Reversal: *{settings['peak_reversal']}%*\nPenggunaan: `/peak on|off|<nilai reversal>`", reply_chat)
         return
     first = args[0].lower()
     if first == "on":
         settings["peak_enabled"] = True
-        send_reply("✅ *Peak Watch aktif.*", reply_chat)
+        send_reply("✅ *Peak Watch diaktifkan.*", reply_chat)
     elif first == "off":
         _cancel_peak_watch_if_active(reply_chat)
         settings["peak_enabled"] = False
@@ -2205,11 +2145,11 @@ def handle_peak_command(args, reply_chat):
         try:
             val = float(first)
             if val <= 0 or val > 3.0:
-                send_reply("Harus antara 0–3.0.", reply_chat); return
+                send_reply("Harus antara 0 – 3.0.", reply_chat); return
             settings["peak_reversal"] = val
-            send_reply(f"Reversal *{val}%*.", reply_chat)
+            send_reply(f"Reversal diatur ke *{val}%*.", reply_chat)
         except ValueError:
-            send_reply("Gunakan `on`, `off`, atau angka reversal.", reply_chat)
+            send_reply("Gunakan `on`, `off`, atau nilai reversal.", reply_chat)
 
 def _cancel_peak_watch_if_active(reply_chat=None):
     global current_mode, peak_gap, peak_strategy
@@ -2220,92 +2160,92 @@ def _cancel_peak_watch_if_active(reply_chat=None):
 
 def handle_sltp_command(args, reply_chat):
     if not args:
-        send_reply(f"🛑 *Trailing SL:* {settings['sl_pct']}%\nUsage: `/sltp sl <nilai>`", reply_chat)
+        send_reply(f"🛑 *Trailing SL:* {settings['sl_pct']}%\nPenggunaan: `/sltp sl <nilai>`", reply_chat)
         return
     if len(args) < 2:
-        send_reply("Usage: `/sltp sl <nilai>`.", reply_chat); return
+        send_reply("Penggunaan: `/sltp sl <nilai>`.", reply_chat); return
     try:
         key, val = args[0].lower(), float(args[1])
         if val <= 0 or val > 10:
-            send_reply("Harus antara 0–10.", reply_chat); return
+            send_reply("Harus antara 0 – 10.", reply_chat); return
         if key == "sl":
             settings["sl_pct"] = val
-            send_reply(f"Trailing SL distance *{val}%*.", reply_chat)
+            send_reply(f"Jarak Trailing SL: *{val}%*.", reply_chat)
         else:
             send_reply("Gunakan `sl`.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_interval_command(args, reply_chat):
     if not args:
-        send_reply(f"Interval: *{settings['scan_interval']}s*\nUsage: `/interval <60-3600>`", reply_chat); return
+        send_reply(f"Interval: *{settings['scan_interval']}s*\nPenggunaan: `/interval <60-3600>`", reply_chat); return
     try:
         val = int(args[0])
         if val < 60 or val > 3600:
-            send_reply("Harus 60–3600 detik.", reply_chat); return
+            send_reply("Harus antara 60 – 3600 detik.", reply_chat); return
         settings["scan_interval"] = val
         send_reply(f"Scan setiap *{val}s*.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_threshold_command(args, reply_chat):
     if len(args) < 2:
-        send_reply("Usage:\n`/threshold entry <val>`\n`/threshold exit <val>`\n`/threshold invalid <val>`", reply_chat); return
+        send_reply("Penggunaan:\n`/threshold entry <val>`\n`/threshold exit <val>`\n`/threshold invalid <val>`", reply_chat); return
     try:
         t_type, val = args[0].lower(), float(args[1])
         if val <= 0 or val > 20:
-            send_reply("Harus antara 0–20.", reply_chat); return
+            send_reply("Harus antara 0 – 20.", reply_chat); return
         if t_type == "entry":   settings["entry_threshold"] = val; send_reply(f"Entry ±{val}%.", reply_chat)
         elif t_type == "exit":  settings["exit_threshold"] = val; send_reply(f"Exit/TP ±{val}%.", reply_chat)
-        elif t_type in ("invalid", "invalidation"): settings["invalidation_threshold"] = val; send_reply(f"Invalid ±{val}%.", reply_chat)
+        elif t_type in ("invalid", "invalidation"): settings["invalidation_threshold"] = val; send_reply(f"Invalidasi ±{val}%.", reply_chat)
         else: send_reply("Gunakan `entry`, `exit`, atau `invalid`.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_lookback_command(args, reply_chat):
     if not args:
-        send_reply(f"Lookback: *{settings['lookback_hours']}h*\nUsage: `/lookback <1-24>`", reply_chat); return
+        send_reply(f"Lookback: *{settings['lookback_hours']}h*\nPenggunaan: `/lookback <1-24>`", reply_chat); return
     try:
         val = int(args[0])
         if val < 1 or val > 24:
-            send_reply("Harus 1–24 jam.", reply_chat); return
+            send_reply("Harus antara 1 – 24 jam.", reply_chat); return
         settings["lookback_hours"] = val
         prune_history(datetime.now(timezone.utc))
-        send_reply(f"Lookback *{val}h*.", reply_chat)
+        send_reply(f"Lookback diatur ke *{val}h*.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_heartbeat_command(args, reply_chat):
     if not args:
-        send_reply(f"Heartbeat: *{settings['heartbeat_minutes']} menit*\nUsage: `/heartbeat <0-120>`", reply_chat); return
+        send_reply(f"Heartbeat: *{settings['heartbeat_minutes']} menit*\nPenggunaan: `/heartbeat <0-120>`", reply_chat); return
     try:
         val = int(args[0])
         if val < 0 or val > 120:
-            send_reply("Harus 0–120 menit.", reply_chat); return
+            send_reply("Harus antara 0 – 120 menit.", reply_chat); return
         settings["heartbeat_minutes"] = val
-        send_reply("Heartbeat *dimatikan*." if val == 0 else f"Heartbeat setiap *{val} menit*.", reply_chat)
+        send_reply("Heartbeat *dinonaktifkan*." if val == 0 else f"Heartbeat setiap *{val} menit*.", reply_chat)
     except ValueError:
-        send_reply("Angkanya tidak valid.", reply_chat)
+        send_reply("Angka tidak valid.", reply_chat)
 
 def handle_redis_command(reply_chat):
     if not UPSTASH_REDIS_URL:
         send_reply("Redis belum dikonfigurasi.", reply_chat); return
     result = _redis_request("GET", f"/get/{REDIS_KEY}")
     if not result or result.get("result") is None:
-        send_reply("❌ Bot A belum simpan data.", reply_chat); return
+        send_reply("❌ Bot A belum menyimpan data.", reply_chat); return
     try:
         data = json.loads(result["result"])
         hrs_stored = len(data) * settings["scan_interval"] / 3600
         lookback   = settings["lookback_hours"]
         status     = "✅ Siap" if hrs_stored >= lookback else f"⏳ {hrs_stored:.1f}h / {lookback}h"
         last_r     = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
-        send_reply(f"⚡ *Redis Status*\nPoints: {len(data)} | {hrs_stored:.1f}h | {status}\nRefresh: {last_r}", reply_chat)
+        send_reply(f"⚡ *Status Redis*\nData: {len(data)} titik | {hrs_stored:.1f}h | {status}\nTerakhir refresh: {last_r}", reply_chat)
     except Exception as e:
         send_reply(f"Gagal membaca: `{e}`", reply_chat)
 
 def handle_setpos_command(args, reply_chat):
     usage = (
-        "*Usage:*\n`/setpos <S1|S2> eth <entry> <qty> <lev>x btc <entry> <qty> <lev>x`\n\n"
+        "*Penggunaan:*\n`/setpos <S1|S2> eth <entry> <qty> <lev>x btc <entry> <qty> <lev>x`\n\n"
         "qty *positif* = Long | qty *negatif* = Short\n\n"
         "*S1:* `/setpos S1 eth 2011.56 -1.4907 50x btc 67794.76 0.029491 50x`\n"
         "*S2:* `/setpos S2 eth 1956.40 15.58 10x btc 67586.10 -0.4439 10x`"
@@ -2322,9 +2262,9 @@ def handle_setpos_command(args, reply_chat):
         eth_entry = _pf(args[2]); eth_qty = _pf(args[3]); eth_lev = _pf(args[4].lower().replace("x", ""))
         btc_entry = _pf(args[6]); btc_qty = _pf(args[7]); btc_lev = _pf(args[8].lower().replace("x", ""))
         if eth_entry <= 0 or btc_entry <= 0:
-            send_reply("Entry price harus positif.", reply_chat); return
+            send_reply("Harga entry harus positif.", reply_chat); return
         if not (1 <= eth_lev <= 200) or not (1 <= btc_lev <= 200):
-            send_reply("Leverage harus 1x–200x.", reply_chat); return
+            send_reply("Leverage harus antara 1x – 200x.", reply_chat); return
         now_iso = datetime.now(timezone.utc).isoformat()
         pos_data.update({
             "eth_entry_price": eth_entry, "eth_qty": eth_qty, "eth_notional_usd": None,
@@ -2338,17 +2278,17 @@ def handle_setpos_command(args, reply_chat):
         eth_dir = "Long 📈" if eth_qty > 0 else "Short 📉"
         btc_dir = "Long 📈" if btc_qty > 0 else "Short 📉"
         send_reply(
-            f"✅ *Posisi {strat_str} sudah Bot simpan.*\n\n"
+            f"✅ *Posisi {strat_str} berhasil disimpan.*\n\n"
             f"ETH: *{eth_dir}* {abs(eth_qty):.4f} @ ${eth_entry:,.2f} | {eth_lev:.0f}x\n"
             f"BTC: *{btc_dir}* {abs(btc_qty):.6f} @ ${btc_entry:,.2f} | {btc_lev:.0f}x\n\n{sv_str}\n"
-            f"Ketik `/health` untuk cek.",
+            f"Ketik `/health` untuk memantau.",
             reply_chat,
         )
     except (ValueError, IndexError) as e:
         send_reply(f"Format salah.\n\n{usage}", reply_chat)
 
 def handle_setfunding_command(args, reply_chat):
-    usage = "*Usage:*\n`/setfunding eth <rate%> btc <rate%>`\nContoh: `/setfunding eth 0.0100 btc 0.0080`"
+    usage = "*Penggunaan:*\n`/setfunding eth <rate%> btc <rate%>`\nContoh: `/setfunding eth 0.0100 btc 0.0080`"
     if len(args) < 4:
         send_reply(usage, reply_chat); return
     try:
@@ -2358,26 +2298,26 @@ def handle_setfunding_command(args, reply_chat):
         eth_fr = _pf(args[1]); btc_fr = _pf(args[3])
         pos_data["eth_funding_rate"] = eth_fr; pos_data["btc_funding_rate"] = btc_fr
         save_pos_data()
-        send_reply(f"✅ *Funding rate disimpan.*\nETH: {eth_fr:+.4f}%/8h | BTC: {btc_fr:+.4f}%/8h\nKetik `/health` untuk lihat break-even timer.", reply_chat)
+        send_reply(f"✅ *Funding rate berhasil disimpan.*\nETH: {eth_fr:+.4f}%/8h | BTC: {btc_fr:+.4f}%/8h\nKetik `/health` untuk melihat break-even timer.", reply_chat)
     except (ValueError, IndexError) as e:
         send_reply(f"Format salah.\n\n{usage}", reply_chat)
 
 def handle_velocity_command(reply_chat):
     vel = calc_gap_velocity()
     if not vel:
-        send_reply(f"Belum cukup data. Sekarang: {len(gap_history)} pts | Butuh minimal 3", reply_chat); return
-    curr_gap = vel["curr_gap"]; et = settings["exit_threshold"]; it = settings["invalidation_threshold"]
+        send_reply(f"Data belum cukup. Saat ini: {len(gap_history)} titik | Minimal 3 titik.", reply_chat); return
+    curr_gap = vel["curr_gap"]
     d15 = vel.get("delta_15m"); d30 = vel.get("delta_30m"); d60 = vel.get("delta_60m")
     eta = vel.get("eta_min"); accel = vel.get("accel")
     def _ds(v): return f"{v:+.3f}%" if v is not None else "N/A"
     conv_15  = d15 is not None and abs(curr_gap + d15) < abs(curr_gap)
     trend_e  = "⬇️ konvergen" if conv_15 else "⬆️ melebar"
     momentum = ("📈 *makin cepat*" if accel > 1.2 else "📉 *makin lambat*" if accel < 0.8 else "➡️ *stabil*") if accel is not None else "N/A"
-    eta_s    = f"~{int(eta)}m" if eta is not None and eta < 10000 else "tidak bisa dihitung"
+    eta_s    = f"~{int(eta)}m" if eta is not None and eta < 10000 else "tidak dapat dihitung"
     send_reply(
-        f"📡 *Gap Velocity Monitor*\n\n┌─────────────────────\n│ Gap: *{curr_gap:+.3f}%*\n"
+        f"📡 *Monitor Kecepatan Gap*\n\n┌─────────────────────\n│ Gap: *{curr_gap:+.3f}%*\n"
         f"│ Δ15m: {_ds(d15)} {trend_e} | Δ30m: {_ds(d30)} | Δ60m: {_ds(d60)}\n└─────────────────────\n\n"
-        f"*Momentum:* {momentum} | *ETA TP:* {eta_s}\n_Berdasarkan {vel['n_pts']} data point._",
+        f"*Momentum:* {momentum} | *Estimasi TP:* {eta_s}\n_Berdasarkan {vel['n_pts']} titik data._",
         reply_chat,
     )
 
@@ -2385,18 +2325,18 @@ def handle_exitconf_command(args, reply_chat):
     conf_s = int(settings["exit_confirm_scans"]); conf_b = float(settings["exit_confirm_buffer"]); pnl_g = float(settings["exit_pnl_gate"])
     if not args or args[0].lower() == "show":
         send_reply(
-            f"*🛡️ Exit Confirmation*\n\n│ Scan: *{conf_s}x* | Buffer: *{conf_b:.2f}%* | P&L gate: *{pnl_g:.2f}%*\n\n"
-            f"*Commands:*\n`/exitconf scans 3` | `/exitconf buffer 0.3` | `/exitconf pnl 0.5` | `/exitconf off`",
+            f"*🛡️ Konfirmasi Exit*\n\n│ Scan: *{conf_s}x* | Buffer: *{conf_b:.2f}%* | P&L gate: *{pnl_g:.2f}%*\n\n"
+            f"*Perintah:*\n`/exitconf scans 3` | `/exitconf buffer 0.3` | `/exitconf pnl 0.5` | `/exitconf off`",
             reply_chat,
         ); return
     if args[0].lower() == "off":
         settings["exit_confirm_scans"] = 0; settings["exit_confirm_buffer"] = 0.0; settings["exit_pnl_gate"] = 0.0
-        send_reply("⚡ *Exit confirmation dimatikan.*", reply_chat); return
+        send_reply("⚡ *Konfirmasi exit dinonaktifkan.*", reply_chat); return
     if len(args) < 2:
-        send_reply("Usage: `/exitconf scans|buffer|pnl <nilai>` atau `/exitconf off`.", reply_chat); return
+        send_reply("Penggunaan: `/exitconf scans|buffer|pnl <nilai>` atau `/exitconf off`.", reply_chat); return
     try:
         key = args[0].lower(); val = float(args[1].replace(",", ""))
-        if key == "scans":   settings["exit_confirm_scans"] = max(0, int(val)); send_reply(f"✅ Scan konfirmasi: *{int(val)}x*.", reply_chat)
+        if key == "scans":   settings["exit_confirm_scans"] = max(0, int(val)); send_reply(f"✅ Konfirmasi scan: *{int(val)}x*.", reply_chat)
         elif key == "buffer":settings["exit_confirm_buffer"] = max(0.0, val); send_reply(f"✅ Exit buffer: *{val:.2f}%*.", reply_chat)
         elif key in ("pnl", "pnlgate"): settings["exit_pnl_gate"] = max(0.0, val); send_reply(f"✅ P&L gate: *{val:.2f}%*.", reply_chat)
         else: send_reply("Gunakan: `scans`, `buffer`, atau `pnl`.", reply_chat)
@@ -2406,21 +2346,21 @@ def handle_exitconf_command(args, reply_chat):
 def handle_health_command(reply_chat):
     if pos_data["eth_entry_price"] is None:
         send_reply(
-            "Belum ada posisi yang diset.\n\nGunakan `/setpos` dulu ya\n\n"
+            "Belum ada posisi yang terdaftar.\n\nSilakan gunakan `/setpos` terlebih dahulu.\n\n"
             "*Contoh S1:* `/setpos S1 eth 2011.56 -1.4907 50x btc 67794.76 0.029491 50x`",
             reply_chat,
         ); return
     if scan_stats.get("last_btc_price") is None:
-        send_reply("Tunggu sebentar. Bot belum dapat harga terbaru", reply_chat); return
+        send_reply("Mohon tunggu sebentar. Bot belum mendapatkan harga terbaru.", reply_chat); return
     h = calc_position_pnl()
     if not h:
-        send_reply("Gagal hitung P&L. Coba `/setpos` ulang ya", reply_chat); return
+        send_reply("Kalkulasi P&L gagal. Silakan coba `/setpos` ulang.", reply_chat); return
     send_reply(build_position_health_message(h), reply_chat)
 
 def handle_clearpos_command(reply_chat):
     for k in pos_data: pos_data[k] = None
     clear_pos_data_redis()
-    send_reply("🗑️ *Data posisi sudah dihapus.*", reply_chat)
+    send_reply("🗑️ *Data posisi berhasil dihapus.*", reply_chat)
 
 def handle_sim_command(args, reply_chat):
     enabled = settings["sim_enabled"]; margin = settings["sim_margin_usd"]
@@ -2428,12 +2368,12 @@ def handle_sim_command(args, reply_chat):
     active = sim_trade["active"]; n_trades = len(sim_trade["history"])
 
     if not args or args[0].lower() == "status":
-        sim_state = "🟢 AKTIF" if enabled else "🔴 MATI"
+        sim_state = "🟢 AKTIF" if enabled else "🔴 NONAKTIF"
         pos_state = f"📍 {sim_trade['strategy']}" if active else "💤 Tidak ada posisi"
         regime_s  = "✅ ON" if settings["sim_regime_filter"] else "❌ OFF"
         send_reply(
-            f"🤖 *Simulation Mode*\n\nStatus: {sim_state}\nPosisi: {pos_state}\n"
-            f"Margin: ${margin:,.0f} | Lev: {lev:.0f}x | Fee: {fee:.3f}%\nTrades: {n_trades}\nRegime filter: {regime_s}\n\n"
+            f"🤖 *Mode Simulasi*\n\nStatus: {sim_state}\nPosisi: {pos_state}\n"
+            f"Margin: ${margin:,.0f} | Lev: {lev:.0f}x | Fee: {fee:.3f}%\nTotal trade: {n_trades}\nFilter regime: {regime_s}\n\n"
             f"`/sim on|off` | `/sim margin <usd>` | `/sim lev <n>` | `/sim regime on|off` | `/sim reset`",
             reply_chat,
         ); return
@@ -2441,41 +2381,41 @@ def handle_sim_command(args, reply_chat):
     cmd = args[0].lower()
     if cmd == "on":
         settings["sim_enabled"] = True
-        send_reply(f"🟢 *Simulation mode ON.* Margin: ${margin:,.0f} | Lev: {lev:.0f}x", reply_chat)
+        send_reply(f"🟢 *Mode simulasi AKTIF.* Margin: ${margin:,.0f} | Lev: {lev:.0f}x", reply_chat)
     elif cmd == "off":
         settings["sim_enabled"] = False
-        send_reply("🔴 *Simulation mode OFF.*", reply_chat)
+        send_reply("🔴 *Mode simulasi NONAKTIF.*", reply_chat)
     elif cmd == "margin":
         try:
             val = float(args[1])
-            if val <= 0 or val > 100000: send_reply("Margin $1–$100,000.", reply_chat); return
+            if val <= 0 or val > 100000: send_reply("Margin $1 – $100,000.", reply_chat); return
             settings["sim_margin_usd"] = val
             send_reply(f"✅ Margin per leg: *${val:,.0f}*.", reply_chat)
-        except (IndexError, ValueError): send_reply("Usage: `/sim margin <usd>`.", reply_chat)
+        except (IndexError, ValueError): send_reply("Penggunaan: `/sim margin <usd>`.", reply_chat)
     elif cmd == "lev":
         try:
             val = float(args[1])
-            if not 1 <= val <= 200: send_reply("Leverage 1x–200x.", reply_chat); return
+            if not 1 <= val <= 200: send_reply("Leverage 1x – 200x.", reply_chat); return
             settings["sim_leverage"] = val
             send_reply(f"✅ Leverage: *{val:.0f}x*.", reply_chat)
-        except (IndexError, ValueError): send_reply("Usage: `/sim lev <n>`.", reply_chat)
+        except (IndexError, ValueError): send_reply("Penggunaan: `/sim lev <n>`.", reply_chat)
     elif cmd == "fee":
         try:
             settings["sim_fee_pct"] = float(args[1])
             send_reply(f"✅ Fee: *{settings['sim_fee_pct']:.4f}%*.", reply_chat)
-        except (IndexError, ValueError): send_reply("Usage: `/sim fee <pct>`.", reply_chat)
+        except (IndexError, ValueError): send_reply("Penggunaan: `/sim fee <pct>`.", reply_chat)
     elif cmd == "reset":
-        sim_trade["history"].clear(); send_reply("✅ History trades direset.", reply_chat)
+        sim_trade["history"].clear(); send_reply("✅ History trade direset.", reply_chat)
     elif cmd == "regime":
         sub = args[1].lower() if len(args) > 1 else ""
         if sub == "on":
-            settings["sim_regime_filter"] = True; send_reply("✅ *Regime filter ON.*", reply_chat)
+            settings["sim_regime_filter"] = True; send_reply("✅ *Filter regime AKTIF.*", reply_chat)
         elif sub == "off":
-            settings["sim_regime_filter"] = False; send_reply("⚠️ *Regime filter OFF.*", reply_chat)
+            settings["sim_regime_filter"] = False; send_reply("⚠️ *Filter regime NONAKTIF.*", reply_chat)
         else:
-            send_reply(f"Regime filter: {'✅ ON' if settings['sim_regime_filter'] else '❌ OFF'}\n`/sim regime on|off`", reply_chat)
+            send_reply(f"Filter regime: {'✅ ON' if settings['sim_regime_filter'] else '❌ OFF'}\n`/sim regime on|off`", reply_chat)
     else:
-        send_reply("Command tidak dikenal. Ketik `/sim` untuk daftar perintah", reply_chat)
+        send_reply("Perintah tidak dikenal. Ketik `/sim` untuk daftar perintah.", reply_chat)
 
 def handle_simstats_command(reply_chat):
     history = sim_trade["history"]
@@ -2487,7 +2427,7 @@ def handle_simstats_command(reply_chat):
             active_str = f"📍 *Posisi: {sim_trade['strategy']}* | Net: *{s}${h['net_pnl']:.2f}*\n\n"
 
     if not history:
-        send_reply(f"{active_str}📊 *Sim Stats*\n\nBelum ada trade selesai.", reply_chat); return
+        send_reply(f"{active_str}📊 *Statistik Simulasi*\n\nBelum ada trade yang selesai.", reply_chat); return
 
     total = len(history); wins = [t for t in history if t["net_pnl"] >= 0]; losses = [t for t in history if t["net_pnl"] < 0]
     total_net = sum(t["net_pnl"] for t in history); total_fee = sum(t["fee"] for t in history)
@@ -2504,11 +2444,11 @@ def handle_simstats_command(reply_chat):
         for t in reversed(recent)
     )
     send_reply(
-        f"{active_str}📊 *Sim Stats — {total} trades*\n"
+        f"{active_str}📊 *Statistik Simulasi — {total} trade*\n"
         f"┌─────────────────────\n│ {emoji} *Net: {sign}${total_net:.2f}* | Fee: -${total_fee:.3f}\n"
         f"│ {len(wins)}W/{len(losses)}L ({win_rate:.0f}%) | R:R 1:{rr:.2f}\n"
-        f"│ Best: +${best['net_pnl']:.2f} | Worst: ${worst['net_pnl']:.2f}\n"
-        f"├─────────────────────\n│ *5 Terakhir:*\n{recent_lines}└─────────────────────\n",
+        f"│ Terbaik: +${best['net_pnl']:.2f} | Terburuk: ${worst['net_pnl']:.2f}\n"
+        f"├─────────────────────\n│ *5 Trade Terakhir:*\n{recent_lines}└─────────────────────\n",
         reply_chat,
     )
 
@@ -2516,41 +2456,45 @@ def handle_help_command(reply_chat):
     enabled = settings["sim_enabled"]; n_trade = len(sim_trade["history"]); active = sim_trade["active"]
     gap_s = f"{float(scan_stats['last_gap']):+.2f}%" if scan_stats.get("last_gap") is not None else "—"
     sim_s = "🟢 ON" if enabled else "🔴 OFF"
-    live_s = "🟢 ON" if is_live_active() else "🔴 OFF"
-    pos_s = f"📍 {sim_trade['strategy']}" if active else "💤 idle"
+    live_s = "🟢 AKTIF" if is_live_active() else "🔴 OFF"
 
     send_reply(
         f"🤖 *Monk Bot B — BTC/ETH Divergence*\n"
-        f"_Gap: {gap_s} | Sim: {sim_s} | Live: {live_s} | Trades: {n_trade}_\n\n"
-        f"*— Market & Status —*\n"
-        f"`/status`           — gap & mode sekarang\n"
-        f"`/analysis`         — snapshot lengkap\n"
-        f"`/ratio`            — ETH/BTC ratio detail\n"
+        f"_Gap: {gap_s} | Sim: {sim_s} | Live: {live_s} | Trade: {n_trade}_\n\n"
+        f"*— Pasar & Status —*\n"
+        f"`/status`           — gap & mode saat ini\n"
+        f"`/analysis`         — snapshot pasar lengkap\n"
+        f"`/ratio`            — detail rasio ETH/BTC\n"
         f"`/pnl`              — P&L posisi aktif\n"
         f"`/velocity`         — kecepatan gap\n\n"
         f"*— Simulasi —*\n"
-        f"`/sim on|off`       — toggle simulasi\n"
+        f"`/sim on|off`       — aktifkan/nonaktifkan simulasi\n"
         f"`/sim margin <usd>` — modal per leg\n"
         f"`/sim lev <n>`      — leverage\n"
-        f"`/simstats`         — rekap trade\n\n"
+        f"`/simstats`         — rekap statistik trade\n\n"
         f"*— 🔴 Paradex Live Trading —*\n"
-        f"`/pdx`              — status koneksi\n"
-        f"`/pdx init <key> <addr>` — hubungkan subkey\n"
-        f"`/pdx balance`      — saldo & equity\n"
-        f"`/pdx fills`        — history fills\n"
-        f"`/pdx cancel`       — cancel semua order\n"
-        f"`/live`             — status & setting live\n"
-        f"`/live on|off`      — toggle live trading\n"
-        f"`/live margin <usd>`— set modal\n"
-        f"`/live lev <n>`     — set leverage\n"
-        f"`/live type market|limit` — order type\n"
-        f"`/live dryrun on`   — test tanpa kirim order\n\n"
-        f"*— Position Health —*\n"
-        f"`/health`           — P&L + margin + liq\n"
+        f"`/pdx`                    — status koneksi Paradex\n"
+        f"`/pdx init l2 <key> <addr>` — hubungkan akun\n"
+        f"`/pdx balance`            — saldo & ekuitas\n"
+        f"`/pdx fills`              — riwayat transaksi\n"
+        f"`/pdx sync`               — perbarui data posisi\n"
+        f"`/pdx cancel`             — batalkan pending orders\n"
+        f"`/pdx close`              — *tutup semua posisi*\n"
+        f"`/pdx lev [nilai]`        — cek / atur leverage\n"
+        f"`/pdx preview <btc> <eth>` — preview ukuran order\n"
+        f"`/live`                   — status & pengaturan live\n"
+        f"`/live on|off`            — aktifkan/nonaktifkan live\n"
+        f"`/live margin <usd>`      — set margin per pair\n"
+        f"`/live lev <n>`           — set leverage\n"
+        f"`/live type market|limit` — jenis order\n"
+        f"`/live dryrun on|off`     — mode uji coba\n\n"
+        f"*— Kesehatan Posisi —*\n"
+        f"`/health`           — P&L + margin + likuidasi\n"
         f"`/setpos S1|S2 ...` — daftarkan posisi manual\n"
-        f"`/setfunding eth <r> btc <r>` — funding rate\n\n"
+        f"`/setfunding eth <r> btc <r>` — atur funding rate\n"
+        f"`/clearpos`         — hapus data posisi\n\n"
         f"*— Konfigurasi —*\n"
-        f"`/settings`         — semua setting\n"
+        f"`/settings`         — tampilkan semua konfigurasi\n"
         f"`/threshold entry|exit|invalid <val>`\n"
         f"`/peak on|off|<val>`\n"
         f"`/exitconf scans|buffer|pnl <val>`\n"
@@ -2559,7 +2503,7 @@ def handle_help_command(reply_chat):
     )
 
 # =============================================================================
-# Startup Message
+# Pesan Startup
 # =============================================================================
 def send_startup_message():
     price_data  = fetch_prices()
@@ -2568,10 +2512,6 @@ def send_startup_message():
         if price_data else "\n⚠️ Gagal mengambil data harga.\n"
     )
     hrs_loaded = len(price_history) * settings["scan_interval"] / 3600
-    hist_info  = (
-        f"⚡ History Bot A: *{hrs_loaded:.1f}h* siap!\n"
-        if price_history else f"⏳ Menunggu Bot A. Sinyal setelah {settings['lookback_hours']}h tersedia\n"
-    )
     peak_s  = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "belum diset"
 
@@ -2581,7 +2521,7 @@ def send_startup_message():
         eth_dir = "Long" if (pos_data["eth_qty"] or 0) > 0 else "Short"
         btc_dir = "Long" if (pos_data["btc_qty"] or 0) > 0 else "Short"
         pos_info = (
-            f"\n🏥 *Posisi {strat} di-restore:*\n"
+            f"\n🏥 *Posisi {strat} dipulihkan:*\n"
             f"ETH {eth_dir} @ ${pos_data['eth_entry_price']:,.2f} | "
             f"BTC {btc_dir} @ ${pos_data['btc_entry_price']:,.2f}\n"
         )
@@ -2591,26 +2531,26 @@ def send_startup_message():
         live_info = f"\n🔴 *Paradex Live tersedia.* Gunakan `/pdx init` untuk terhubung.\n"
 
     return send_alert(
-        f"………\nAnata! *Bot sudah siap menjaga.* \n"
+        f"………\n*Bot siap memantau pasar.* ⚡\n"
         f"_Swing / Day Trade Edition + Paradex Live_\n"
         f"{price_info}\n"
         f"📊 Scan: {settings['scan_interval']}s | Lookback: {settings['lookback_hours']}h\n"
         f"📈 Entry: ±{settings['entry_threshold']}% | 📉 Exit: ±{settings['exit_threshold']}%\n"
-        f"⚠️ Invalid: ±{settings['invalidation_threshold']}% | 🛑 TSL: {settings['sl_pct']}%\n"
+        f"⚠️ Invalidasi: ±{settings['invalidation_threshold']}% | 🛑 TSL: {settings['sl_pct']}%\n"
         f"🔍 Peak Mode: {peak_s} | 💰 Modal: {cap_str}\n"
         f"{pos_info}{live_info}\n"
-        f"Ketik `/help` untuk semua command. Bot akan selalu di sini menemanimu  ⚡"
+        f"Ketik `/help` untuk daftar lengkap perintah. ⚡"
     )
 
 # =============================================================================
-# Command Polling Thread
+# Thread Polling Command
 # =============================================================================
 def command_polling_thread():
     while True:
         try:
             process_commands()
         except Exception as e:
-            logger.debug(f"Command polling error: {e}")
+            logger.debug(f"Error polling command: {e}")
             time.sleep(5)
 
 # =============================================================================
@@ -2623,21 +2563,21 @@ def main_loop():
     logger.info("Monk Bot B — BTC/ETH Divergence | Swing/Day Trade | + Paradex Live")
     logger.info(
         f"Entry: ±{settings['entry_threshold']}% | Exit: ±{settings['exit_threshold']}% | "
-        f"Invalid: ±{settings['invalidation_threshold']}% | TSL: {settings['sl_pct']}%"
+        f"Invalidasi: ±{settings['invalidation_threshold']}% | TSL: {settings['sl_pct']}%"
     )
     logger.info("=" * 60)
 
     threading.Thread(target=command_polling_thread, daemon=True).start()
-    logger.info("Command listener started")
+    logger.info("Command listener aktif")
 
     load_history()
     prune_history(datetime.now(timezone.utc))
     last_redis_refresh = datetime.now(timezone.utc)
-    logger.info(f"History loaded: {len(price_history)} points")
+    logger.info(f"History dimuat: {len(price_history)} titik data")
 
     load_pos_data()
     if pos_data.get("strategy"):
-        logger.info(f"pos_data restored: {pos_data['strategy']} "
+        logger.info(f"Data posisi dipulihkan: {pos_data['strategy']} "
                     f"ETH@{pos_data['eth_entry_price']} BTC@{pos_data['btc_entry_price']}")
 
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -2655,14 +2595,14 @@ def main_loop():
             refresh_history_from_redis(now)
             price_data = fetch_prices()
             if price_data is None:
-                logger.warning("Failed to fetch prices")
+                logger.warning("Gagal mengambil data harga")
             else:
                 scan_stats["count"]         += 1
                 scan_stats["last_btc_price"] = price_data.btc_price
                 scan_stats["last_eth_price"] = price_data.eth_price
 
                 if not is_data_fresh(now, price_data.btc_updated_at, price_data.eth_updated_at):
-                    logger.warning("Data not fresh, skipping")
+                    logger.warning("Data tidak segar, dilewati")
                 else:
                     price_history.append(PricePoint(now, price_data.btc_price, price_data.eth_price))
                     prune_history(now)
@@ -2670,7 +2610,7 @@ def main_loop():
                     price_then = get_lookback_price(now)
                     if price_then is None:
                         hrs = len(price_history) * settings["scan_interval"] / 3600
-                        logger.info(f"Waiting for data... ({hrs:.1f}h / {settings['lookback_hours']}h)")
+                        logger.info(f"Menunggu data... ({hrs:.1f}h / {settings['lookback_hours']}h)")
                     else:
                         btc_ret, eth_ret, gap = compute_returns(
                             price_data.btc_price, price_data.eth_price,
@@ -2698,10 +2638,10 @@ def main_loop():
             time.sleep(settings["scan_interval"])
 
         except KeyboardInterrupt:
-            logger.info("Shutting down")
+            logger.info("Bot dihentikan")
             break
         except Exception as e:
-            logger.exception(f"Unexpected error: {e}")
+            logger.exception(f"Error tidak terduga: {e}")
             time.sleep(60)
 
 # =============================================================================
@@ -2709,7 +2649,7 @@ def main_loop():
 # =============================================================================
 if __name__ == "__main__":
     if not TELEGRAM_BOT_TOKEN:
-        logger.warning("TELEGRAM_BOT_TOKEN not set")
+        logger.warning("TELEGRAM_BOT_TOKEN belum diset")
     if not TELEGRAM_CHAT_ID:
-        logger.warning("TELEGRAM_CHAT_ID not set")
+        logger.warning("TELEGRAM_CHAT_ID belum diset")
     main_loop()
