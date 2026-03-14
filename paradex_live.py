@@ -193,11 +193,13 @@ def _get_order_sides(strategy: str) -> tuple:
     s    = strategy.upper()
 
     if mode == "x":
-        # Mode X: ETH ikut arah BTC
-        if s == "S1":
-            return "BUY",  "BUY",  "Long BTC + Long ETH (Mode X)"
+        # Mode X: BTC ikut arah ETH
+        # S2 = ETH kuat (Long ETH) → BTC ikut Long
+        # S1 = ETH lemah (Short ETH) → BTC ikut Short
+        if s == "S2":
+            return "BUY",  "BUY",  "Long ETH + Long BTC (Mode X — ikut ETH)"
         else:
-            return "SELL", "SELL", "Short BTC + Short ETH (Mode X)"
+            return "SELL", "SELL", "Short ETH + Short BTC (Mode X — ikut ETH)"
     else:
         # Mode Normal: divergence / pairs trade
         if s == "S1":
@@ -688,9 +690,9 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         mode_val  = live_settings.get("mode", "normal")
         mode_str  = "🔵 NORMAL" if mode_val == "normal" else "🟣 MODE X"
         mode_hint = (
-            "S1: Long BTC/Short ETH | S2: Short BTC/Long ETH"
+            "S1: Long BTC/Short ETH | S2: Long ETH/Short BTC"
             if mode_val == "normal" else
-            "S1: Long BTC+ETH | S2: Short BTC+ETH"
+            "S2: Long ETH+BTC | S1: Short ETH+BTC"
         )
         dr_str    = " 🧪 *DRYRUN*" if dryrun else ""
         reply(
@@ -818,20 +820,20 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         current_mode_val = live_settings.get("mode", "normal")
         if len(args) < 2:
             _mode_desc = (
-                "🔵 *NORMAL* — Pair divergence (Short satu, Long satunya)"
+                "🔵 *NORMAL* — Pair divergence (satu long, satu short)"
                 if current_mode_val == "normal" else
-                "🟣 *MODE X* — Momentum (keduanya searah)"
+                "🟣 *MODE X* — Momentum (BTC ikut arah ETH)"
             )
             reply(
                 f"⚙️ *Mode Trading Saat Ini:* {_mode_desc}\n\n"
                 f"*Mode NORMAL (default):*\n"
-                f"│ S1: Long BTC + Short ETH\n"
-                f"│ S2: Short BTC + Long ETH\n"
+                f"│ S1: Long BTC / Short ETH\n"
+                f"│ S2: Long ETH / Short BTC\n"
                 f"│ → Strategi divergence, taruhan gap konvergen\n\n"
-                f"*Mode X (momentum):*\n"
-                f"│ S1: Long BTC + *Long ETH* ← ETH ikut BTC\n"
-                f"│ S2: Short BTC + *Short ETH* ← ETH ikut BTC\n"
-                f"│ → Strategi momentum, keduanya searah\n\n"
+                f"*Mode X (ETH sebagai anchor):*\n"
+                f"│ S2 (ETH naik): Long ETH + *Long BTC* ← BTC ikut ETH\n"
+                f"│ S1 (ETH turun): Short ETH + *Short BTC* ← BTC ikut ETH\n"
+                f"│ → Strategi momentum, BTC mengikuti arah ETH\n\n"
                 f"Ganti mode: `/live mode normal` atau `/live mode x`"
             )
             return
@@ -848,10 +850,10 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
             live_settings["mode"] = "x"
             reply(
                 "🟣 *Mode X diaktifkan*\n\n"
-                "│ S1: Long BTC + *Long ETH* (ikut BTC naik)\n"
-                "│ S2: Short BTC + *Short ETH* (ikut BTC turun)\n\n"
-                "_Strategi momentum — ETH mengikuti arah BTC._\n"
-                "⚠️ _Perhatikan: kedua posisi searah, risiko lebih tinggi._"
+                "│ S2 (ETH naik): Long ETH + *Long BTC* ← BTC ikut ETH\n"
+                "│ S1 (ETH turun): Short ETH + *Short BTC* ← BTC ikut ETH\n\n"
+                "_Strategi momentum — BTC mengikuti arah ETH._\n"
+                "⚠️ _Kedua posisi searah, risiko lebih tinggi dari Mode Normal._"
             )
         else:
             reply("Gunakan `/live mode normal` atau `/live mode x`.")
