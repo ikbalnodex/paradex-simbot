@@ -1372,24 +1372,45 @@ def _build_pnl_section(leg_e, leg_b, net, emoji=""):
     if leg_e is not None and leg_b is not None and capital > 0:
         half = capital / 2.0
         usd_e = leg_e / 100 * half; usd_b = leg_b / 100 * half; usd_net = usd_e + usd_b
-        if active_strategy == Strategy.S1:
-            return (
-                f"\n*Estimasi P&L Pairs:*\n"
-                f"┌─────────────────────\n"
-                f"│ Long BTC:  {leg_b:+.2f}% (${usd_b:+.2f})\n"
-                f"│ Short ETH: {leg_e:+.2f}% (${usd_e:+.2f})\n"
-                f"│ *Net: {net:+.2f}% (${usd_net:+.2f})* {emoji}\n"
-                f"└─────────────────────\n\n"
-            )
+        _live_mode = live_settings.get("mode", "normal") if PARADEX_LIVE_AVAILABLE else "normal"
+        if _live_mode == "x":
+            if active_strategy == Strategy.S1:
+                return (
+                    f"\n*Estimasi P&L — Mode X 🟣:*\n"
+                    f"┌─────────────────────\n"
+                    f"│ Short ETH: {leg_e:+.2f}% (${usd_e:+.2f})\n"
+                    f"│ Short BTC: {leg_b:+.2f}% (${usd_b:+.2f})\n"
+                    f"│ *Net: {net:+.2f}% (${usd_net:+.2f})* {emoji}\n"
+                    f"└─────────────────────\n\n"
+                )
+            else:
+                return (
+                    f"\n*Estimasi P&L — Mode X 🟣:*\n"
+                    f"┌─────────────────────\n"
+                    f"│ Long ETH:  {leg_e:+.2f}% (${usd_e:+.2f})\n"
+                    f"│ Long BTC:  {leg_b:+.2f}% (${usd_b:+.2f})\n"
+                    f"│ *Net: {net:+.2f}% (${usd_net:+.2f})* {emoji}\n"
+                    f"└─────────────────────\n\n"
+                )
         else:
-            return (
-                f"\n*Estimasi P&L Pairs:*\n"
-                f"┌─────────────────────\n"
-                f"│ Long ETH:  {leg_e:+.2f}% (${usd_e:+.2f})\n"
-                f"│ Short BTC: {leg_b:+.2f}% (${usd_b:+.2f})\n"
-                f"│ *Net: {net:+.2f}% (${usd_net:+.2f})* {emoji}\n"
-                f"└─────────────────────\n\n"
-            )
+            if active_strategy == Strategy.S1:
+                return (
+                    f"\n*Estimasi P&L Pairs:*\n"
+                    f"┌─────────────────────\n"
+                    f"│ Long BTC:  {leg_b:+.2f}% (${usd_b:+.2f})\n"
+                    f"│ Short ETH: {leg_e:+.2f}% (${usd_e:+.2f})\n"
+                    f"│ *Net: {net:+.2f}% (${usd_net:+.2f})* {emoji}\n"
+                    f"└─────────────────────\n\n"
+                )
+            else:
+                return (
+                    f"\n*Estimasi P&L Pairs:*\n"
+                    f"┌─────────────────────\n"
+                    f"│ Long ETH:  {leg_e:+.2f}% (${usd_e:+.2f})\n"
+                    f"│ Short BTC: {leg_b:+.2f}% (${usd_b:+.2f})\n"
+                    f"│ *Net: {net:+.2f}% (${usd_net:+.2f})* {emoji}\n"
+                    f"└─────────────────────\n\n"
+                )
     elif net is not None:
         return f"\n_Pergerakan gap net: {net:+.2f}%_\n\n"
     return ""
@@ -1400,15 +1421,17 @@ def _build_pnl_section(leg_e, leg_b, net, emoji=""):
 
 def build_peak_watch_message(strategy, gap):
     lb = get_lookback_label()
+    _live_mode = live_settings.get("mode", "normal") if PARADEX_LIVE_AVAILABLE else "normal"
     if strategy == Strategy.S1:
-        direction = "Long BTC / Short ETH"
-        reason    = f"ETH pumping lebih kencang dari BTC ({lb})"
+        reason = f"ETH pumping lebih kencang dari BTC ({lb})"
+        direction = "Short ETH + Short BTC (Mode X)" if _live_mode == "x" else "Long BTC / Short ETH"
     else:
-        direction = "Long ETH / Short BTC"
-        reason    = f"ETH dumping lebih dalam dari BTC ({lb})"
+        reason = f"ETH dumping lebih dalam dari BTC ({lb})"
+        direction = "Long ETH + Long BTC (Mode X)" if _live_mode == "x" else "Long ETH / Short BTC"
+    mode_tag = " 🟣" if _live_mode == "x" else ""
     return (
         f"………\nSinyal menarik terdeteksi.\n\n"
-        f"_{reason}_\nRencana: *{direction}*\nGap sekarang: *{format_value(gap)}%*\n\n"
+        f"_{reason}_\nRencana: *{direction}*{mode_tag}\nGap sekarang: *{format_value(gap)}%*\n\n"
         f"Bot akan menunggu konfirmasi puncak sebelum masuk. ⚡"
     )
 
@@ -1418,14 +1441,22 @@ def build_entry_message(strategy, btc_ret, eth_ret, gap, peak, btc_now, eth_now,
     sl_pct    = settings["sl_pct"]
     et        = settings["exit_threshold"]
 
+    # Tentukan direction label sesuai mode aktif
+    _live_mode = live_settings.get("mode", "normal") if PARADEX_LIVE_AVAILABLE else "normal"
     if strategy == Strategy.S1:
-        direction   = "Long BTC / Short ETH"
         tp_gap      = et
         tsl_initial = gap_float + sl_pct
+        if _live_mode == "x":
+            direction = "Short ETH + Short BTC (Mode X)"
+        else:
+            direction = "Long BTC / Short ETH"
     else:
-        direction   = "Long ETH / Short BTC"
         tp_gap      = -et
         tsl_initial = gap_float - sl_pct
+        if _live_mode == "x":
+            direction = "Long ETH + Long BTC (Mode X)"
+        else:
+            direction = "Long ETH / Short BTC"
 
     driver, driver_emoji, driver_explain = analyze_gap_driver(float(btc_ret), float(eth_ret), gap_float)
     conv_hint = get_convergence_hint(strategy, driver)
@@ -1470,18 +1501,34 @@ def build_entry_message(strategy, btc_ret, eth_ret, gap, peak, btc_now, eth_now,
     ratio_tag = f"{eth_ratio:.0f}/{btc_ratio:.0f}" if eth_ratio != 50.0 else "50/50"
     eth_alloc, btc_alloc, eth_qty, btc_qty = calc_sizing(btc_now, eth_now)
     if eth_alloc > 0:
-        if strategy == Strategy.S1:
-            sizing_section = (
-                f"\n💰 *Sizing ({ratio_tag}, ${settings['capital']:,.0f}):*\n"
-                f"┌─────────────────────\n│ Long BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n"
-                f"│ Short ETH: ${eth_alloc:,.0f} → {eth_qty:.4f} ETH\n└─────────────────────\n"
-            )
+        if _live_mode == "x":
+            # Mode X: keduanya searah
+            if strategy == Strategy.S1:
+                sizing_section = (
+                    f"\n💰 *Sizing ({ratio_tag}, ${settings['capital']:,.0f}) — Mode X:*\n"
+                    f"┌─────────────────────\n│ Short ETH: ${eth_alloc:,.0f} → {eth_qty:.4f} ETH\n"
+                    f"│ Short BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n└─────────────────────\n"
+                )
+            else:
+                sizing_section = (
+                    f"\n💰 *Sizing ({ratio_tag}, ${settings['capital']:,.0f}) — Mode X:*\n"
+                    f"┌─────────────────────\n│ Long ETH: ${eth_alloc:,.0f} → {eth_qty:.4f} ETH\n"
+                    f"│ Long BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n└─────────────────────\n"
+                )
         else:
-            sizing_section = (
-                f"\n💰 *Sizing ({ratio_tag}, ${settings['capital']:,.0f}):*\n"
-                f"┌─────────────────────\n│ Long ETH: ${eth_alloc:,.0f} → {eth_qty:.4f} ETH\n"
-                f"│ Short BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n└─────────────────────\n"
-            )
+            # Mode Normal: pairs trade
+            if strategy == Strategy.S1:
+                sizing_section = (
+                    f"\n💰 *Sizing ({ratio_tag}, ${settings['capital']:,.0f}):*\n"
+                    f"┌─────────────────────\n│ Long BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n"
+                    f"│ Short ETH: ${eth_alloc:,.0f} → {eth_qty:.4f} ETH\n└─────────────────────\n"
+                )
+            else:
+                sizing_section = (
+                    f"\n💰 *Sizing ({ratio_tag}, ${settings['capital']:,.0f}):*\n"
+                    f"┌─────────────────────\n│ Long ETH: ${eth_alloc:,.0f} → {eth_qty:.4f} ETH\n"
+                    f"│ Short BTC: ${btc_alloc:,.0f} → {btc_qty:.6f} BTC\n└─────────────────────\n"
+                )
     else:
         sizing_section = "\n_💡 Gunakan `/capital <modal>` untuk panduan sizing._\n"
 
@@ -1494,9 +1541,10 @@ def build_entry_message(strategy, btc_ret, eth_ret, gap, peak, btc_now, eth_now,
 
     live_line = ""
     if PARADEX_LIVE_AVAILABLE and is_live_active():
-        lev = float(live_settings.get("leverage", 1))
-        otype = live_settings.get("order_type", "MARKET")
-        live_line = f"\n🔴 *Live trading AKTIF — order dikirim ke Paradex ({otype}, {lev:.0f}x)*\n"
+        lev        = float(live_settings.get("leverage", 1))
+        otype      = live_settings.get("order_type", "MARKET")
+        _mode_lbl  = "🟣 Mode X" if live_settings.get("mode") == "x" else "🔵 Normal"
+        live_line  = f"\n🔴 *Live AKTIF — {otype} {lev:.0f}x | {_mode_lbl}*\n"
 
     return (
         f"Sinyal yang ditunggu sudah muncul! ⚡\n"
@@ -2005,7 +2053,9 @@ def handle_settings_command(reply_chat):
     cap_str = f"${settings['capital']:,.0f}" if settings["capital"] > 0 else "Belum diset"
     eth_sr  = settings["eth_size_ratio"]; btc_sr = 100.0 - eth_sr
     ec_s   = int(settings["exit_confirm_scans"]); ec_b = float(settings["exit_confirm_buffer"]); ec_p = float(settings["exit_pnl_gate"])
-    live_s = "🟢 AKTIF" if is_live_active() else "🔴 OFF"
+    live_s     = "🟢 AKTIF" if is_live_active() else "🔴 OFF"
+    _live_mode = live_settings.get("mode", "normal") if PARADEX_LIVE_AVAILABLE else "normal"
+    mode_s     = "🟣 Mode X" if _live_mode == "x" else "🔵 Normal"
     send_reply(
         f"⚙️ *Konfigurasi Bot Saat Ini*\n\n"
         f"📊 Interval Scan:   {settings['scan_interval']}s\n"
@@ -2020,7 +2070,7 @@ def handle_settings_command(reply_chat):
         f"🛡️ Exit Confirm:    {ec_s}x | buffer {ec_b:.2f}% | P&L gate {ec_p:.2f}%\n"
         f"📐 Rasio Sizing:    ETH {eth_sr:.0f}% / BTC {btc_sr:.0f}%\n"
         f"💰 Modal:           {cap_str}\n"
-        f"🔴 Live Trading:    {live_s}\n\n"
+        f"🔴 Live Trading:    {live_s} | {mode_s}\n\n"
         f"_Ketik `/help` untuk daftar perintah lengkap._",
         reply_chat,
     )
@@ -2032,6 +2082,8 @@ def handle_status_command(reply_chat):
     peak_s     = "✅ ON" if settings["peak_enabled"] else "❌ OFF"
     last_r     = last_redis_refresh.strftime("%H:%M UTC") if last_redis_refresh else "Belum"
     live_s     = "🟢 AKTIF" if is_live_active() else "🔴 OFF"
+    _live_mode = live_settings.get("mode", "normal") if PARADEX_LIVE_AVAILABLE else "normal"
+    mode_s     = " 🟣 Mode X" if _live_mode == "x" else " 🔵 Normal"
 
     scan_section = ""
     if current_mode == Mode.SCAN:
@@ -2066,7 +2118,7 @@ def handle_status_command(reply_chat):
         )
 
     send_reply(
-        f"📊 *Status Bot*\n\nMode: *{current_mode.value}* | Peak: {peak_s} | Live: {live_s}\n"
+        f"📊 *Status Bot*\n\nMode: *{current_mode.value}* | Peak: {peak_s} | Live: {live_s}{mode_s if is_live_active() else ''}\n"
         f"{scan_section}{track_section}Data: {ready} | Redis: {last_r} 🔒\n",
         reply_chat,
     )
@@ -2081,14 +2133,26 @@ def handle_pnl_command(reply_chat):
     capital = settings["capital"]
     if leg_e is not None and leg_b is not None and capital > 0:
         half = capital / 2.0
-        if active_strategy == Strategy.S1:
-            pnl_body = (f"│ Long BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
-                        f"│ Short ETH: {leg_e:+.2f}% (${leg_e/100*half:+.2f})\n"
-                        f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})*\n")
+        _live_mode = live_settings.get("mode", "normal") if PARADEX_LIVE_AVAILABLE else "normal"
+        if _live_mode == "x":
+            # Mode X: keduanya searah
+            if active_strategy == Strategy.S1:
+                pnl_body = (f"│ Short ETH: {leg_e:+.2f}% (${leg_e/100*half:+.2f})\n"
+                            f"│ Short BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
+                            f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})* 🟣\n")
+            else:
+                pnl_body = (f"│ Long ETH: {leg_e:+.2f}% (${leg_e/100*half:+.2f})\n"
+                            f"│ Long BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
+                            f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})* 🟣\n")
         else:
-            pnl_body = (f"│ Long ETH: {leg_e:+.2f}% (${leg_e/100*half:+.2f})\n"
-                        f"│ Short BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
-                        f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})*\n")
+            if active_strategy == Strategy.S1:
+                pnl_body = (f"│ Long BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
+                            f"│ Short ETH: {leg_e:+.2f}% (${leg_e/100*half:+.2f})\n"
+                            f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})*\n")
+            else:
+                pnl_body = (f"│ Long ETH: {leg_e:+.2f}% (${leg_e/100*half:+.2f})\n"
+                            f"│ Short BTC: {leg_b:+.2f}% (${leg_b/100*half:+.2f})\n"
+                            f"│ *Net: {net:+.2f}% (${(leg_e+leg_b)/100*half:+.2f})*\n")
     else:
         pnl_body = f"│ Pergerakan gap net: *{net:+.2f}%*\n" if net else "│ Data tidak cukup\n"
 
