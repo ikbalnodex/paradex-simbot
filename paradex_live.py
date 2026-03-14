@@ -1,495 +1,770 @@
 """
-paradex_executor.py — Paradex Live Trading Executor
+paradex_live.py — Paradex Live Trading Module
 
 FIXES:
-1. set_leverage → POST /account/leverage (endpoint benar Paradex)
-2. Size rounding per market step
-3. Signature [r,s] → hex + signature_timestamp ms
-4. close_all_positions() untuk close via command
+1. /pdx close — close semua posisi via command
+2. Sizing formula yang benar + penjelasan margin vs notional
+3. set_leverage dipanggil sebelum setiap order
+4. /live dryrun + preview sizing
+
+═══════════════════════════════════════════════════
+SIZING FORMULA — BACA INI DULU
+═══════════════════════════════════════════════════
+
+margin_usd = modal yang kamu RISIKO (yang bisa hilang kalau liq)
+leverage   = multiplier
+notional   = margin_usd × leverage  ← nilai posisi sebenarnya
+
+Contoh:
+  margin=$30, lev=40x
+  notional = $30 × 40 = $1,200
+  eth_qty  = $1,200 / $2,100 = 0.5714 ETH
+  btc_qty  = $1,200 / $85,000 = 0.01412 BTC
+
+Dengan balance $100:
+  Pakai margin=$30/pair × 2 pair = $60 total margin
+  Notional exposed = $1,200 × 2 = $2,400
+  Yang bisa liq: hanya $60
+
+Kenapa exchange tampilkan "Margin Req $0.3"?
+  → Itu kalkulasi exchange berdasarkan leverage yang MEREKA set
+  → Kalau leverage default exchange = 50x, margin req = $15/50 = $0.3
+  → SOLUSI: set_leverage() HARUS berhasil sebelum order
+═══════════════════════════════════════════════════
 """
-import asyncio
 import logging
-import time
-import traceback
-from decimal import Decimal, ROUND_DOWN
 from typing import Optional
+
+from paradex_executor import ParadexExecutor
 
 logger = logging.getLogger(__name__)
 
-# ── Market size steps ─────────────────────────────────────────────────────────
-# Minimum size increment per market di Paradex
-_SIZE_STEP = {
-    "ETH-USD-PERP": Decimal("0.0001"),
-    "BTC-USD-PERP": Decimal("0.00001"),
+# ─────────────────────────────────────────────────────────────────────────────
+# Global state
+# ─────────────────────────────────────────────────────────────────────────────
+
+live_settings: dict = {
+    "active":     False,
+    "margin_usd": 100.0,   # margin per pair yang kamu risiko
+    "leverage":   10.0,
+    "order_type": "MARKET",
+    "dryrun":     False,
 }
-_DEFAULT_STEP = Decimal("0.0001")
+
+_executor: Optional[ParadexExecutor] = None
+
+MARKET_ETH = "ETH-USD-PERP"
+MARKET_BTC = "BTC-USD-PERP"
+ALL_MARKETS = [MARKET_ETH, MARKET_BTC]
 
 
-def _round_size(size: float, market: str) -> Decimal:
-    step = _SIZE_STEP.get(market, _DEFAULT_STEP)
-    d    = Decimal(str(size))
-    return (d / step).to_integral_value(rounding=ROUND_DOWN) * step
+# ─────────────────────────────────────────────────────────────────────────────
+# Public helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_executor() -> Optional[ParadexExecutor]:
+    return _executor
 
 
-# ── Import paradex-py ─────────────────────────────────────────────────────────
-PARADEX_PY_AVAILABLE = False
-_PROD_ENV = None
-
-try:
-    import paradex_py
-    from paradex_py import Paradex
-    from paradex_py.environment import Environment
-    import paradex_py.environment as _pe
-
-    _env_exports = [x for x in dir(_pe) if not x.startswith("_")]
-    logger.info(f"paradex-py v{getattr(paradex_py, '__version__', '?')} | env exports: {_env_exports}")
-
-    for _prod_name in ("PRODNET", "MAINNET", "PROD", "PRODUCTION"):
-        if hasattr(_pe, _prod_name):
-            _PROD_ENV = getattr(_pe, _prod_name)
-            logger.info(f"Using production env: {_prod_name} = {_PROD_ENV}")
-            break
-
-    if _PROD_ENV is None:
-        for _name in ("PRODNET", "MAINNET", "PROD"):
-            try:
-                _PROD_ENV = Environment[_name]
-                logger.info(f"Using Environment['{_name}'] = {_PROD_ENV}")
-                break
-            except (KeyError, AttributeError):
-                pass
-
-    if _PROD_ENV is None:
-        logger.warning("Cannot find production env! Falling back to TESTNET.")
-        _PROD_ENV = getattr(_pe, "TESTNET", None) or Environment["TESTNET"]
-
-    PARADEX_PY_AVAILABLE = True
-
-except ImportError as e:
-    logger.error(f"paradex-py not installed: {e}")
+def is_live_active() -> bool:
+    return live_settings["active"] and _executor is not None and _executor.is_ready()
 
 
-def _int_from_hex(key: str) -> int:
-    key = key.strip()
-    if not key.startswith("0x") and not key.startswith("0X"):
-        key = "0x" + key
-    return int(key, 16)
+def get_health_positions() -> str:
+    if not is_live_active():
+        return ""
+    try:
+        _executor.sync_all()
+        eth_pos = _executor.get_live_position(MARKET_ETH)
+        btc_pos = _executor.get_live_position(MARKET_BTC)
+        if not eth_pos and not btc_pos:
+            return "\n_🔴 Live aktif tapi belum ada posisi di Paradex._\n"
 
-
-def _to_dict(obj):
-    if obj is None:
-        return None
-    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
-        obj = obj[0]
-    if hasattr(obj, "__dict__"):
-        obj = vars(obj)
-    if not isinstance(obj, dict):
-        obj = {"id": str(obj)}
-    return obj
-
-
-class ParadexExecutor:
-    def __init__(
-        self,
-        l1_private_key: str = None,
-        l1_address:     str = None,
-        l2_private_key: str = None,
-        l2_address:     str = None,
-    ):
-        self._l1_key     = (l1_private_key or l2_private_key or "").strip()
-        self._l1_address = (l1_address     or l2_address     or "").strip()
-        self.account_address = self._l1_address
-        self._ready          = False
-        self._positions      = {}
-        self._pdx            = None
-        self._base_url       = "https://api.prod.paradex.trade/v1"
-
-        if not PARADEX_PY_AVAILABLE:
-            logger.error("paradex-py tidak tersedia")
-            return
-        if not self._l1_key or not self._l1_address:
-            logger.error("Private key dan address wajib diisi")
-            return
-
-        self._init_client()
-
-    def _run(self, coro):
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(asyncio.wait_for(coro, timeout=30))
-            finally:
-                loop.close()
-        except asyncio.TimeoutError:
-            logger.warning("Paradex API timeout (30s)")
-            return None
-        except Exception as e:
-            logger.warning(f"_run error: {e}")
-            return None
-
-    def _init_client(self):
-        try:
-            logger.info(f"Connecting to Paradex: {self._l1_address[:12]}... env={_PROD_ENV}")
-            self._pdx = Paradex(
-                env=_PROD_ENV,
-                l1_address=self._l1_address,
-                l1_private_key=_int_from_hex(self._l1_key),
+        def _line(p, label):
+            if not p:
+                return f"│ {label}: — tidak ada\n"
+            sign = "+" if p["unrealized_pnl"] >= 0 else ""
+            e    = "🟢" if p["unrealized_pnl"] >= 0 else "🔴"
+            return (
+                f"│ {label}: *{p['side']}* {abs(p['size'])} "
+                f"@ ${p['avg_entry']:,.2f} | UPnL: {e} *{sign}${p['unrealized_pnl']:,.2f}*"
+                + (f" | Liq: ${p['liq_price']:,.2f}" if p.get("liq_price") else "")
+                + "\n"
             )
-            try:
-                self._run(self._pdx.init_account(l1_address=self._l1_address))
-            except Exception as init_err:
-                if "already initialized" in str(init_err).lower():
-                    logger.info("Account already initialized — OK")
-                else:
-                    raise init_err
 
+        return (
+            f"\n*🔴 Paradex Live Positions:*\n"
+            f"┌─────────────────────\n"
+            + _line(eth_pos, "ETH")
+            + _line(btc_pos, "BTC")
+            + f"│ Margin: ${live_settings['margin_usd']:,.0f}/pair | Lev: {live_settings['leverage']:.0f}x\n"
+            + f"└─────────────────────\n"
+        )
+    except Exception as e:
+        logger.warning(f"get_health_positions error: {e}")
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sizing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _calc_sizes(btc_price: float, eth_price: float):
+    """
+    notional = margin × leverage
+    qty      = notional / price
+
+    Contoh margin=$30, lev=40x, eth=$2100:
+      notional = $1,200
+      eth_qty  = 0.5714
+    """
+    margin   = float(live_settings["margin_usd"])
+    lev      = float(live_settings["leverage"])
+    notional = margin * lev
+
+    eth_qty = notional / eth_price
+    btc_qty = notional / btc_price
+
+    logger.info(
+        f"Sizing: margin=${margin} × lev={lev}x = notional=${notional:.2f}/pair | "
+        f"ETH={eth_qty:.6f}@${eth_price} BTC={btc_qty:.7f}@${btc_price}"
+    )
+    return eth_qty, btc_qty
+
+
+def calc_order_preview(btc_price: float, eth_price: float) -> str:
+    margin   = float(live_settings["margin_usd"])
+    lev      = float(live_settings["leverage"])
+    notional = margin * lev
+    eth_qty, btc_qty = _calc_sizes(btc_price, eth_price)
+    return (
+        f"┌─────────────────────\n"
+        f"│ *Order Preview (per pair):*\n"
+        f"│ Margin risiko: *${margin:,.2f}*/pair\n"
+        f"│ Leverage:      *{lev:.0f}x*\n"
+        f"│ Notional:      *${notional:,.2f}*/pair\n"
+        f"│ ETH qty:  {eth_qty:.4f} ETH @ ${eth_price:,.2f}\n"
+        f"│ BTC qty:  {btc_qty:.5f} BTC @ ${btc_price:,.2f}\n"
+        f"│ Margin req exchange: ~${notional/lev:,.2f}/pair\n"
+        f"│ Total margin 2 pair: *${margin * 2:,.2f}*\n"
+        f"└─────────────────────\n"
+        f"_💡 Margin Req di exchange = Notional ÷ Leverage yang aktif_\n"
+        f"_Kalau tidak sesuai, cek `/pdx` apakah leverage berhasil diset_\n"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Live open / close
+# ─────────────────────────────────────────────────────────────────────────────
+
+def live_open_or_sim(
+    strategy:  str,
+    btc_price: float,
+    eth_price: float,
+    sim_fn=None,
+) -> str:
+    if not is_live_active():
+        if sim_fn:
+            return sim_fn()
+        return ""
+
+    eth_qty, btc_qty = _calc_sizes(btc_price, eth_price)
+    margin   = live_settings["margin_usd"]
+    lev      = live_settings["leverage"]
+    notional = margin * lev
+    otype    = live_settings["order_type"]
+    dryrun   = live_settings["dryrun"]
+
+    if strategy.upper() == "S1":
+        eth_side  = "SELL"
+        btc_side  = "BUY"
+        direction = "Long BTC / Short ETH"
+    else:
+        eth_side  = "BUY"
+        btc_side  = "SELL"
+        direction = "Long ETH / Short BTC"
+
+    if dryrun:
+        logger.info(f"[DRYRUN] Would open {strategy}: ETH {eth_side} {eth_qty:.4f} | BTC {btc_side} {btc_qty:.5f}")
+        return (
+            f"\n🧪 *[DRYRUN] Live Order Disimulasikan — {strategy}*\n"
+            f"┌─────────────────────\n"
+            f"│ *{direction}*\n"
+            f"│ ETH: *{eth_side}* {eth_qty:.4f} @ ${eth_price:,.2f}\n"
+            f"│ BTC: *{btc_side}* {btc_qty:.5f} @ ${btc_price:,.2f}\n"
+            f"│ Margin: ${margin:,.2f}/pair | Lev: {lev:.0f}x | Notional: ~${notional:,.2f}/pair\n"
+            f"└─────────────────────\n"
+            f"_Dryrun mode — tidak ada order sungguhan yang dikirim._\n"
+        )
+
+    # ── Set leverage SEBELUM order ─────────────────────────────────────────
+    eth_lev_ok = _executor.set_leverage(MARKET_ETH, lev)
+    btc_lev_ok = _executor.set_leverage(MARKET_BTC, lev)
+    lev_status = "✅" if (eth_lev_ok and btc_lev_ok) else "⚠️ gagal set lev"
+
+    # ── Kirim order ────────────────────────────────────────────────────────
+    eth_result = _executor.place_order(MARKET_ETH, eth_side, eth_qty, order_type=otype)
+    btc_result = _executor.place_order(MARKET_BTC, btc_side, btc_qty, order_type=otype)
+
+    eth_ok = eth_result is not None
+    btc_ok = btc_result is not None
+    eth_id = eth_result.get("id", "?") if eth_result else "FAILED"
+    btc_id = btc_result.get("id", "?") if btc_result else "FAILED"
+
+    status_e = "✅" if eth_ok else "❌"
+    status_b = "✅" if btc_ok else "❌"
+
+    logger.info(f"Live open {strategy}: ETH={eth_ok} BTC={btc_ok} | lev={lev_status}")
+
+    return (
+        f"\n🔴 *[LIVE] Posisi Dibuka — {strategy}*\n"
+        f"┌─────────────────────\n"
+        f"│ *{direction}*\n"
+        f"│ ETH: {status_e} {eth_side} {eth_qty:.4f} @ ${eth_price:,.2f} | ID: `{eth_id}`\n"
+        f"│ BTC: {status_b} {btc_side} {btc_qty:.5f} @ ${btc_price:,.2f} | ID: `{btc_id}`\n"
+        f"│ Margin: ${margin:,.2f}/pair | Lev: {lev:.0f}x {lev_status}\n"
+        f"│ Notional: ~${notional:,.2f}/pair\n"
+        f"└─────────────────────\n"
+        + ("_⚠️ Salah satu order GAGAL — cek posisi manual!_\n" if not (eth_ok and btc_ok) else "")
+        + ("_⚠️ Leverage gagal diset — cek log untuk detail_\n" if not (eth_lev_ok and btc_lev_ok) else "")
+    )
+
+
+def live_close_or_sim(
+    strategy:  str,
+    btc_price: float,
+    eth_price: float,
+    reason:    str = "EXIT",
+    sim_fn=None,
+) -> str:
+    if not is_live_active():
+        if sim_fn:
+            return sim_fn()
+        return ""
+
+    dryrun = live_settings["dryrun"]
+    otype  = live_settings["order_type"]
+
+    if dryrun:
+        logger.info(f"[DRYRUN] Would close {strategy} reason={reason}")
+        return (
+            f"\n🧪 *[DRYRUN] Close Order Disimulasikan — {strategy}*\n"
+            f"_Reason: {reason} | Dryrun mode aktif._\n"
+        )
+
+    _executor.sync_all()
+    eth_result = _executor.close_position(MARKET_ETH, order_type=otype)
+    btc_result = _executor.close_position(MARKET_BTC, order_type=otype)
+
+    eth_ok = eth_result is not None
+    btc_ok = btc_result is not None
+    eth_id = eth_result.get("id", "?") if eth_result else "FAILED / No pos"
+    btc_id = btc_result.get("id", "?") if btc_result else "FAILED / No pos"
+
+    status_e = "✅" if eth_ok else "⚠️"
+    status_b = "✅" if btc_ok else "⚠️"
+    reason_emoji = {"EXIT": "✅", "TP": "🎯", "TSL": "⛔", "INVALID": "⚠️"}.get(reason, "🔴")
+
+    logger.info(f"Live close {strategy} [{reason}]: ETH={eth_ok} BTC={btc_ok}")
+
+    return (
+        f"\n🔴 *[LIVE] Posisi Ditutup — {reason_emoji} {reason}*\n"
+        f"┌─────────────────────\n"
+        f"│ ETH: {status_e} Close @ ${eth_price:,.2f} | ID: `{eth_id}`\n"
+        f"│ BTC: {status_b} Close @ ${btc_price:,.2f} | ID: `{btc_id}`\n"
+        f"└─────────────────────\n"
+        + ("_⚠️ Salah satu order GAGAL — cek posisi manual!_\n" if not (eth_ok and btc_ok) else "")
+    )
+
+
+def live_close_all_command() -> str:
+    """
+    Close semua posisi via command manual (/pdx close).
+    Tidak butuh price karena pakai MARKET order.
+    """
+    if _executor is None or not _executor.is_ready():
+        return "⚠️ Paradex belum terhubung."
+
+    dryrun = live_settings.get("dryrun", False)
+    if dryrun:
+        return "🧪 *[DRYRUN]* Close semua posisi disimulasikan — dryrun mode aktif."
+
+    _executor.sync_all()
+    positions = _executor.get_all_positions()
+
+    if not positions:
+        return "ℹ️ *Tidak ada posisi terbuka di Paradex.*"
+
+    results = _executor.close_all_positions(order_type="MARKET")
+
+    lines = []
+    all_ok = True
+    for market, result in results.items():
+        ok = result is not None
+        if not ok:
+            all_ok = False
+        order_id = result.get("id", "?") if result else "FAILED"
+        pos      = positions.get(market, {})
+        side     = pos.get("side", "?")
+        size     = abs(pos.get("size", 0))
+        lines.append(f"│ {'✅' if ok else '❌'} {market}: close {side} {size} | ID: `{order_id}`")
+
+    return (
+        f"🔴 *[LIVE] Close All Positions*\n"
+        f"┌─────────────────────\n"
+        + "\n".join(lines)
+        + f"\n└─────────────────────\n"
+        + ("✅ Semua posisi berhasil ditutup.\n" if all_ok else "⚠️ Beberapa posisi gagal ditutup — cek manual!\n")
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /pdx command handler
+# ─────────────────────────────────────────────────────────────────────────────
+
+def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
+    """
+    /pdx                             — status koneksi
+    /pdx init [l1|l2] <key> <addr>  — init executor
+    /pdx balance                     — saldo akun
+    /pdx fills                       — history fills
+    /pdx cancel                      — cancel open orders (bukan close posisi)
+    /pdx close                       — close semua posisi ← [NEW]
+    /pdx sync                        — refresh posisi
+    /pdx preview <btc> <eth>         — preview sizing
+    /pdx lev                         — cek / set leverage langsung
+    """
+    global _executor
+
+    def reply(msg):
+        if send_reply_fn:
+            send_reply_fn(msg, chat_id)
+
+    sub = args[0].lower() if args else "status"
+
+    # ── Status ──────────────────────────────────────────────────
+    if sub in ("status", ""):
+        if _executor is None:
+            reply(
+                "🔴 *Paradex: Belum terhubung*\n\n"
+                "Gunakan:\n`/pdx init l2 <key> <address>`\n\n"
+                "📍 *Cara dapat key:*\n"
+                "Paradex app → klik address kanan atas → *Export Private Key*"
+            )
+        elif not _executor.is_ready():
+            reply("⚠️ *Paradex: Executor ada tapi koneksi gagal.*\nCoba `/pdx init` ulang.")
+        else:
+            bal      = _executor.get_balance()
+            margin   = live_settings["margin_usd"]
+            lev      = live_settings["leverage"]
+            otype    = live_settings["order_type"]
+            dryrun   = live_settings["dryrun"]
+            active   = live_settings["active"]
+            notional = margin * lev
+
+            bal_str = (
+                f"│ Equity:          *${bal.get('equity', 0):,.2f}*\n"
+                f"│ Free Collateral: ${bal.get('free_collateral', 0):,.2f}\n"
+                f"│ UPnL:            ${bal.get('unrealized_pnl', 0):+,.2f}\n"
+            ) if bal else "│ Balance: (gagal load)\n"
+
+            _executor.sync_all()
+            eth_pos = _executor.get_live_position(MARKET_ETH)
+            btc_pos = _executor.get_live_position(MARKET_BTC)
+
+            def _pos_line(p, label):
+                if not p:
+                    return f"│ {label}: — tidak ada posisi\n"
+                sign = "+" if p["unrealized_pnl"] >= 0 else ""
+                return (
+                    f"│ {label}: *{p['side']}* {abs(p['size'])} "
+                    f"@ ${p['avg_entry']:,.2f} | Lev: {p['leverage']:.0f}x | "
+                    f"UPnL: *{sign}${p['unrealized_pnl']:,.2f}*\n"
+                )
+
+            pos_block = (
+                f"│\n│ 📍 *Posisi Aktif:*\n"
+                + _pos_line(eth_pos, "ETH")
+                + _pos_line(btc_pos, "BTC")
+            ) if (eth_pos or btc_pos) else "│\n│ 📍 Posisi: — tidak ada\n"
+
+            live_str = "🟢 AKTIF" if active else "🔴 OFF"
+            dr_str   = " 🧪 DRYRUN" if dryrun else ""
+            reply(
+                f"✅ *Paradex Dashboard*{dr_str}\n"
+                f"┌─────────────────────\n"
+                f"│ Account: `{_executor.account_address[:18]}...`\n"
+                f"{bal_str}"
+                f"│\n│ ⚙️ *Trading Settings:*\n"
+                f"│ Status:     {live_str}\n"
+                f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
+                f"│ Leverage:   *{lev:.0f}x*\n"
+                f"│ Notional:   ~*${notional:,.2f}*/pair\n"
+                f"│ Order type: {otype}\n"
+                f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
+                f"{pos_block}"
+                f"└─────────────────────\n"
+                f"_`/pdx balance` | `/pdx fills` | `/pdx sync`_\n"
+                f"_`/pdx cancel` — cancel orders | `/pdx close` — close posisi_\n"
+                f"_`/pdx preview <btc> <eth>` | `/pdx lev` — cek leverage_\n"
+                f"_`/live on|off` | `/live margin` | `/live lev`_"
+            )
+
+    # ── Init ────────────────────────────────────────────────────
+    elif sub == "init":
+        if len(args) < 3:
+            reply(
+                "⚠️ *Usage:*\n\n"
+                "*Mode L2 (Paradex Key — Recommended):*\n"
+                "`/pdx init l2 <paradex_private_key> <l2_address>`\n\n"
+                "*Mode L1 (Ethereum Key):*\n"
+                "`/pdx init l1 <eth_private_key> <eth_address>`\n\n"
+                "📍 *Cara dapat L2 key:*\n"
+                "Paradex app → klik address kanan atas → *Export Private Key*\n\n"
+                "⚠️ _Kirim hanya di chat pribadi yang aman!_"
+            )
+            return
+
+        if args[1].lower() in ("l1", "l2"):
+            mode = args[1].lower()
+            if len(args) < 4:
+                reply("⚠️ Kurang argumen. Contoh: `/pdx init l2 <key> <address>`")
+                return
+            key     = args[2]
+            address = args[3]
+        else:
+            mode    = "l2"
+            key     = args[1]
+            address = args[2]
+
+        reply(f"⏳ Menghubungkan ke Paradex (mode {mode.upper()})...")
+        try:
+            if mode == "l2":
+                new_exec = ParadexExecutor(l2_private_key=key, l2_address=address)
+            else:
+                new_exec = ParadexExecutor(l1_private_key=key, l1_address=address)
+
+            if new_exec.is_ready():
+                _executor = new_exec
+                bal = _executor.get_balance()
+                eq  = bal.get("equity", 0)
+                reply(
+                    f"✅ *Paradex terhubung! (Mode {mode.upper()})*\n"
+                    f"Account: `{address[:16]}...`\n"
+                    f"Equity: *${eq:,.2f}*\n\n"
+                    f"Gunakan `/live on` untuk mulai live trading."
+                )
+            else:
+                reply(
+                    "❌ *Gagal terhubung ke Paradex.*\n"
+                    "Pastikan key dan address benar.\n"
+                    "_Cek Railway logs untuk detail error._"
+                )
+        except Exception as e:
+            reply(f"❌ *Error saat init:* `{e}`")
+
+    # ── Close ALL positions ← [NEW] ──────────────────────────────
+    elif sub == "close":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+        reply("⏳ Menutup semua posisi...")
+        msg = live_close_all_command()
+        reply(msg)
+
+    # ── Leverage check/set ← [NEW] ────────────────────────────────
+    elif sub == "lev":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+
+        # Kalau ada arg kedua = set leverage sekarang
+        if len(args) >= 2:
             try:
-                url = str(self._pdx.api_client.base_url).rstrip("/")
-                if url.startswith("http"):
-                    self._base_url = url
+                lev_val = float(args[1])
+                if not (1 <= lev_val <= 200):
+                    reply("Leverage harus 1–200x."); return
+                live_settings["leverage"] = lev_val
+                eth_ok = _executor.set_leverage(MARKET_ETH, lev_val)
+                btc_ok = _executor.set_leverage(MARKET_BTC, lev_val)
+                reply(
+                    f"✅ *Leverage diupdate: {lev_val:.0f}x*\n"
+                    f"ETH: {'✅' if eth_ok else '❌'} | BTC: {'✅' if btc_ok else '❌'}\n"
+                    f"_Cek posisi di Paradex UI untuk konfirmasi_"
+                )
+            except ValueError:
+                reply("Angkanya tidak valid. Contoh: `/pdx lev 40`")
+        else:
+            # Tampilkan leverage dari posisi aktif
+            _executor.sync_all()
+            eth_pos = _executor.get_live_position(MARKET_ETH)
+            btc_pos = _executor.get_live_position(MARKET_BTC)
+            eth_lev = eth_pos.get("leverage", "?") if eth_pos else "No pos"
+            btc_lev = btc_pos.get("leverage", "?") if btc_pos else "No pos"
+            lev_set = live_settings["leverage"]
+            reply(
+                f"📊 *Leverage Status*\n"
+                f"┌─────────────────────\n"
+                f"│ Setting bot: *{lev_set:.0f}x*\n"
+                f"│ ETH aktif:   {eth_lev}x\n"
+                f"│ BTC aktif:   {btc_lev}x\n"
+                f"└─────────────────────\n"
+                f"_Untuk set: `/pdx lev <nilai>` atau `/live lev <nilai>`_"
+            )
+
+    # ── Preview sizing ───────────────────────────────────────────
+    elif sub == "preview":
+        if len(args) < 3:
+            reply(
+                "Usage: `/pdx preview <btc_price> <eth_price>`\n"
+                "Contoh: `/pdx preview 85000 2100`"
+            ); return
+        try:
+            btc_p = float(args[1])
+            eth_p = float(args[2])
+            reply(f"📐 *Order Size Preview:*\n{calc_order_preview(btc_p, eth_p)}")
+        except ValueError:
+            reply("Harga tidak valid.")
+
+    # ── Balance ─────────────────────────────────────────────────
+    elif sub == "balance":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+        bal = _executor.get_balance()
+        if not bal:
+            reply("❌ Gagal ambil balance dari Paradex."); return
+        reply(
+            f"💰 *Paradex Balance*\n"
+            f"┌─────────────────────\n"
+            f"│ Equity:          *${bal.get('equity', 0):,.2f}*\n"
+            f"│ Free Collateral: ${bal.get('free_collateral', 0):,.2f}\n"
+            f"│ Total Collateral:${bal.get('total_collateral', 0):,.2f}\n"
+            f"│ Unrealized PnL:  ${bal.get('unrealized_pnl', 0):+,.2f}\n"
+            f"└─────────────────────\n"
+        )
+
+    # ── Fills ───────────────────────────────────────────────────
+    elif sub == "fills":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+        fills = _executor.get_fills(limit=10)
+        if not fills:
+            reply("📋 *Fills:* Tidak ada data atau belum ada trade."); return
+        lines = []
+        for f in fills[:8]:
+            mkt   = f.get("market", "?")
+            side  = f.get("side", "?")
+            size  = f.get("size", "?")
+            price = f.get("price", "?")
+            try:
+                price = f"${float(price):,.2f}"
             except Exception:
                 pass
-            logger.info(f"Base URL: {self._base_url}")
-
-            self._ready = True
-            logger.info(f"✅ Paradex connected: {self._l1_address[:12]}...")
-        except Exception as e:
-            logger.warning(f"Paradex init failed: {e}\n{traceback.format_exc()}")
-            self._ready = False
-
-    def is_ready(self) -> bool:
-        return self._ready and self._pdx is not None
-
-    def reconnect(self) -> bool:
-        logger.info("Reconnecting to Paradex...")
-        self._init_client()
-        return self._ready
-
-    def _get_jwt(self) -> Optional[str]:
-        try:
-            acc = self._pdx.account
-            for attr in ("jwt_token", "jwt", "token", "access_token"):
-                val = getattr(acc, attr, None)
-                if val:
-                    return str(val)
-            hdrs = getattr(self._pdx.api_client, "headers", {})
-            if isinstance(hdrs, dict):
-                for k in ("Authorization", "authorization"):
-                    v = hdrs.get(k, "")
-                    if v:
-                        return v.replace("Bearer ", "").strip()
-            return None
-        except Exception as e:
-            logger.warning(f"_get_jwt error: {e}")
-            return None
-
-    def _request(self, method: str, path: str, body: dict = None) -> Optional[dict]:
-        """Authenticated REST request ke Paradex."""
-        import requests
-        jwt = self._get_jwt()
-        if not jwt:
-            logger.warning("_request: tidak bisa ambil JWT")
-            return None
-        url     = f"{self._base_url}{path}"
-        headers = {
-            "Content-Type":  "application/json",
-            "Authorization": f"Bearer {jwt}",
-        }
-        try:
-            if method.upper() == "POST":
-                resp = requests.post(url, json=body, headers=headers, timeout=15)
-            elif method.upper() == "PUT":
-                resp = requests.put(url, json=body, headers=headers, timeout=15)
-            elif method.upper() == "DELETE":
-                resp = requests.delete(url, headers=headers, timeout=15)
-            else:
-                resp = requests.get(url, headers=headers, timeout=15)
-
-            logger.info(f"{method.upper()} {path} → {resp.status_code}: {resp.text[:300]}")
-
-            if resp.status_code in (200, 201):
-                return resp.json() if resp.text.strip() else {"ok": True}
-            elif resp.status_code == 204:
-                return {"ok": True}
-            elif resp.status_code == 401:
-                logger.info("JWT expired, reconnecting...")
-                if self.reconnect():
-                    return self._request(method, path, body)
-            else:
-                logger.warning(f"HTTP {resp.status_code}: {resp.text}")
-            return None
-        except Exception as e:
-            logger.warning(f"_request error: {e}")
-            return None
-
-    # ─────────────────────────────────────────────────────────────
-    # Leverage  ← FIX: endpoint /account/leverage
-    # ─────────────────────────────────────────────────────────────
-
-    def set_leverage(self, market: str, leverage: float) -> bool:
-        """
-        Set leverage untuk market tertentu.
-        Paradex endpoint: POST /v1/account/margin
-        Ref: docs.paradex.trade/api/prod/account/set-margin-configuration
-        Body: {"market": "ETH-USD-PERP", "max_leverage": "40"}
-        """
-        if not self.is_ready():
-            return False
-
-        lev_int = int(leverage)
-        logger.info(f"Setting leverage {market} → {lev_int}x")
-
-        # Coba via paradex-py method dulu
-        try:
-            for fn_name in ("update_leverage", "set_leverage", "change_leverage",
-                            "set_margin_config", "update_margin"):
-                fn = getattr(self._pdx.api_client, fn_name, None)
-                if fn:
-                    fn(market=market, leverage=lev_int)
-                    logger.info(f"✅ Leverage set via api_client.{fn_name}(): {market} {lev_int}x")
-                    return True
-        except Exception as e:
-            logger.info(f"api_client leverage method gagal: {e} — trying REST")
-
-        # Paradex REST: POST /account/margin (endpoint yang benar)
-        # max_leverage = string sesuai Paradex API spec
-        for body in [
-            {"market": market, "max_leverage": str(lev_int)},
-            {"market": market, "max_leverage": lev_int},
-            {"market": market, "leverage": str(lev_int)},
-        ]:
-            result = self._request("POST", "/account/margin", body)
-            if result is not None:
-                logger.info(f"✅ Leverage set: {market} {lev_int}x | body={body}")
-                return True
-
-        logger.warning(
-            f"set_leverage gagal: {market} {lev_int}x — "
-            f"order tetap dikirim tapi leverage pakai default exchange"
+            lines.append(f"│ {side} {size} {mkt} @ {price}")
+        reply(
+            f"📋 *Recent Fills ({len(fills)}):*\n"
+            f"┌─────────────────────\n"
+            + "\n".join(lines)
+            + f"\n└─────────────────────\n"
         )
-        return False
 
-    def set_leverage_all(self, leverage: float, markets: list = None) -> None:
-        if markets is None:
-            markets = list(_SIZE_STEP.keys())
-        for m in markets:
-            self.set_leverage(m, leverage)
+    # ── Cancel open orders (bukan close posisi) ──────────────────
+    elif sub == "cancel":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+        ok = _executor.cancel_all_orders()
+        reply(
+            "✅ *Semua open orders dibatalkan.*\n"
+            "_💡 Ini hanya cancel pending orders, bukan close posisi._\n"
+            "_Untuk close posisi: `/pdx close`_"
+            if ok else "❌ Gagal cancel orders."
+        )
 
-    # ─────────────────────────────────────────────────────────────
-    # Balance
-    # ─────────────────────────────────────────────────────────────
-
-    def get_balance(self) -> dict:
-        if not self.is_ready():
-            return {}
-        try:
-            data = _to_dict(self._pdx.api_client.fetch_account_summary())
-            if not data:
-                return {}
-            return {
-                "free_collateral":  float(data.get("free_collateral",  data.get("available_margin",  0)) or 0),
-                "total_collateral": float(data.get("total_collateral", data.get("initial_margin",    0)) or 0),
-                "equity":           float(data.get("equity",           data.get("account_value",     0)) or 0),
-                "unrealized_pnl":   float(data.get("unrealized_pnl",  0) or 0),
-            }
-        except Exception as e:
-            logger.warning(f"get_balance error: {e}")
-            return {}
-
-    # ─────────────────────────────────────────────────────────────
-    # Positions
-    # ─────────────────────────────────────────────────────────────
-
-    def sync_all(self):
-        if not self.is_ready():
-            return
-        try:
-            data = self._pdx.api_client.fetch_positions()
-            if data is None:
-                return
-            results = data if isinstance(data, list) else data.get("results", data.get("positions", []))
-            self._positions = {}
-            for pos in results:
-                if hasattr(pos, "__dict__"):
-                    pos = vars(pos)
-                if not isinstance(pos, dict):
-                    continue
-                market = pos.get("market", "")
-                size   = float(pos.get("size", 0) or 0)
-                if size == 0:
-                    continue
-                self._positions[market] = {
-                    "market":         market,
-                    "side":           "LONG" if size > 0 else "SHORT",
-                    "size":           size,
-                    "avg_entry":      float(pos.get("average_entry_price", pos.get("avg_entry_price", 0)) or 0),
-                    "unrealized_pnl": float(pos.get("unrealized_pnl", 0) or 0),
-                    "leverage":       float(pos.get("leverage", 1) or 1),
-                    "liq_price":      float(pos.get("liquidation_price", 0) or 0) or None,
-                }
-            logger.info(f"Positions synced: {list(self._positions.keys()) or 'none'}")
-        except Exception as e:
-            logger.warning(f"sync_all error: {e}")
-
-    def get_live_position(self, market: str) -> Optional[dict]:
-        return self._positions.get(market)
-
-    def get_all_positions(self) -> dict:
-        return dict(self._positions)
-
-    # ─────────────────────────────────────────────────────────────
-    # Orders
-    # ─────────────────────────────────────────────────────────────
-
-    def place_order(
-        self,
-        market:      str,
-        side:        str,
-        size:        float,
-        order_type:  str   = "MARKET",
-        price:       float = None,
-        reduce_only: bool  = False,
-    ) -> Optional[dict]:
-        if not self.is_ready():
-            logger.warning("Paradex not ready — cannot place order")
-            return None
-
-        size_dec = _round_size(size, market)
-        logger.info(f"Placing order: {side} {size_dec} {market} @ {order_type} (raw={size})")
-
-        if size_dec <= 0:
-            logger.warning(f"place_order: size terlalu kecil setelah rounding ({size} → {size_dec})")
-            return None
-
-        # ── Step 1: Build Order object ────────────────────────────
-        try:
-            from paradex_py.common.order import Order, OrderSide, OrderType
-
-            order_obj = Order(
-                market=market,
-                order_type=OrderType(order_type.upper()),
-                order_side=OrderSide(side.upper()),
-                size=size_dec,
-                limit_price=Decimal(str(price)) if price is not None else Decimal("0"),
-                reduce_only=reduce_only,
+    # ── Sync ────────────────────────────────────────────────────
+    elif sub == "sync":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+        _executor.sync_all()
+        eth_pos = _executor.get_live_position(MARKET_ETH)
+        btc_pos = _executor.get_live_position(MARKET_BTC)
+        def _pos_str(p, label):
+            if not p:
+                return f"│ {label}: Tidak ada posisi\n"
+            return (
+                f"│ {label}: {p['side']} {abs(p['size'])} "
+                f"@ ${p['avg_entry']:,.2f} | Lev: {p['leverage']:.0f}x | "
+                f"UPnL: ${p['unrealized_pnl']:+,.2f}\n"
             )
-            logger.info(f"Order object OK: {order_obj}")
-        except Exception as e:
-            logger.warning(f"place_order [build] error: {e}\n{traceback.format_exc()}")
-            return None
-
-        # ── Step 2: Sign Order object langsung ───────────────────
-        try:
-            sig_timestamp_ms = int(time.time() * 1000)
-            if hasattr(order_obj, "signature_timestamp"):
-                order_obj.signature_timestamp = sig_timestamp_ms
-
-            signature = self._pdx.account.sign_order(order_obj)
-            logger.info(f"sign_order OK: {signature}")
-
-            if isinstance(signature, (list, tuple)) and len(signature) >= 2:
-                sig_str = f"0x{int(signature[0]):064x}{int(signature[1]):064x}"
-            elif isinstance(signature, str):
-                sig_str = signature
-            else:
-                sig_str = str(signature)
-
-            logger.info(f"Signature: {sig_str[:34]}...")
-        except Exception as e:
-            logger.warning(f"place_order [sign] error: {e}\n{traceback.format_exc()}")
-            return None
-
-        # ── Step 3: POST ke /orders ───────────────────────────────
-        payload = {
-            "market":              market,
-            "side":                side.upper(),
-            "type":                order_type.upper(),
-            "size":                str(size_dec),
-            "signature":           sig_str,
-            "signature_timestamp": sig_timestamp_ms,
-            "reduce_only":         reduce_only,
-            "instruction":         "GTC",
-        }
-        if price is not None:
-            payload["price"] = str(price)
-
-        client_id = getattr(order_obj, "client_id", None)
-        if client_id:
-            payload["client_id"] = str(client_id)
-
-        result = self._request("POST", "/orders", payload)
-        if result is None:
-            return None
-
-        result   = _to_dict(result)
-        order_id = result.get("id", result.get("order_id", result.get("client_id", "?")))
-        logger.info(f"✅ Order placed: {order_id}")
-        return result
-
-    def cancel_all_orders(self, market: str = None) -> bool:
-        if not self.is_ready():
-            return False
-        try:
-            if market:
-                self._pdx.api_client.cancel_all_orders(market=market)
-            else:
-                self._pdx.api_client.cancel_all_orders()
-            return True
-        except Exception as e:
-            logger.warning(f"cancel_all_orders error: {e}")
-            return False
-
-    def get_fills(self, market: str = None, limit: int = 10) -> list:
-        if not self.is_ready():
-            return []
-        try:
-            kwargs = {"page_size": limit}
-            if market:
-                kwargs["market"] = market
-            data = self._pdx.api_client.fetch_fills(**kwargs)
-            if not data:
-                return []
-            results = data if isinstance(data, list) else data.get("results", [])
-            return [vars(f) if hasattr(f, "__dict__") else f for f in results]
-        except Exception as e:
-            logger.warning(f"get_fills error: {e}")
-            return []
-
-    def close_position(
-        self,
-        market:     str,
-        order_type: str   = "MARKET",
-        price:      float = None,
-    ) -> Optional[dict]:
-        """Close satu posisi spesifik."""
-        pos = self.get_live_position(market)
-        if not pos:
-            self.sync_all()
-            pos = self.get_live_position(market)
-        if not pos:
-            logger.info(f"No open position for {market}")
-            return None
-        close_side = "SELL" if pos["side"] == "LONG" else "BUY"
-        return self.place_order(
-            market=market,
-            side=close_side,
-            size=abs(pos["size"]),
-            order_type=order_type,
-            price=price,
-            reduce_only=True,
+        reply(
+            f"🔄 *Positions synced:*\n"
+            f"┌─────────────────────\n"
+            + _pos_str(eth_pos, "ETH")
+            + _pos_str(btc_pos, "BTC")
+            + "└─────────────────────\n"
         )
 
-    def close_all_positions(self, order_type: str = "MARKET") -> dict:
-        """
-        Close semua posisi yang terbuka.
-        Return: {"ETH-USD-PERP": result_or_none, "BTC-USD-PERP": result_or_none, ...}
-        """
-        self.sync_all()
-        results = {}
-        for market, pos in list(self._positions.items()):
-            logger.info(f"Closing position: {market} {pos['side']} {pos['size']}")
-            result = self.close_position(market, order_type=order_type)
-            results[market] = result
-            logger.info(f"Close {market}: {'✅' if result else '❌'}")
-        return results
+    else:
+        reply(
+            "❓ Command tidak dikenal.\n\n"
+            "*Usage:*\n"
+            "`/pdx` — status\n"
+            "`/pdx init l2 <key> <addr>` — connect\n"
+            "`/pdx balance` | `/pdx fills` | `/pdx sync`\n"
+            "`/pdx cancel` — cancel pending orders\n"
+            "`/pdx close` — *close semua posisi*\n"
+            "`/pdx lev [nilai]` — cek / set leverage\n"
+            "`/pdx preview <btc> <eth>` — preview sizing"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /live command handler
+# ─────────────────────────────────────────────────────────────────────────────
+
+def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
+    """
+    /live                    — status
+    /live on|off             — toggle
+    /live margin <usd>       — set margin per pair (yang kamu risiko)
+    /live lev <n>            — set leverage + apply ke exchange sekarang
+    /live type market|limit  — order type
+    /live dryrun on|off      — dryrun mode
+    """
+    def reply(msg):
+        if send_reply_fn:
+            send_reply_fn(msg, chat_id)
+
+    sub    = args[0].lower() if args else "status"
+    margin = live_settings["margin_usd"]
+    lev    = live_settings["leverage"]
+    otype  = live_settings["order_type"]
+    dryrun = live_settings["dryrun"]
+
+    if sub in ("status", ""):
+        connected = _executor is not None and _executor.is_ready()
+        active    = live_settings["active"]
+        notional  = margin * lev
+        dr_str    = " 🧪 *DRYRUN*" if dryrun else ""
+        reply(
+            f"🔴 *Live Trading Settings*{dr_str}\n\n"
+            f"┌─────────────────────\n"
+            f"│ Status:     {'🟢 ON' if active else '🔴 OFF'}\n"
+            f"│ Paradex:    {'✅ Connected' if connected else '❌ Not connected'}\n"
+            f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
+            f"│ Leverage:   *{lev:.0f}x*\n"
+            f"│ Notional:   ~*${notional:,.2f}*/pair\n"
+            f"│ Margin req: ~*${notional/lev:,.2f}*/pair (= margin)\n"
+            f"│ Total used: ~*${margin * 2:,.2f}* (2 pairs)\n"
+            f"│ Order type: {otype}\n"
+            f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
+            f"└─────────────────────\n\n"
+            f"💡 _`/pdx preview <btc> <eth>` untuk lihat qty_\n"
+            f"💡 _`/pdx lev` untuk cek leverage aktif di exchange_\n\n"
+            f"*Commands:*\n"
+            f"`/live on|off` | `/live margin <usd>`\n"
+            f"`/live lev <n>` | `/live type market|limit`\n"
+            f"`/live dryrun on|off`"
+        )
+
+    elif sub == "on":
+        if _executor is None or not _executor.is_ready():
+            reply(
+                "⚠️ *Paradex belum terhubung!*\n"
+                "Gunakan dulu: `/pdx init l2 <key> <address>`"
+            ); return
+        live_settings["active"] = True
+        notional = margin * lev
+        dr_note  = "\n🧪 *Dryrun mode ON* — tidak ada order sungguhan." if dryrun else ""
+        reply(
+            f"🟢 *Live trading AKTIF!*{dr_note}\n\n"
+            f"Margin: *${margin:,.2f}*/pair | Lev: *{lev:.0f}x*\n"
+            f"Notional: ~*${notional:,.2f}*/pair\n"
+            f"Total margin 2 pair: *${margin * 2:,.2f}*\n\n"
+            f"_Bot akan set leverage dan kirim order ke Paradex saat sinyal._\n\n"
+            f"⚠️ Pastikan balance ≥ ${margin * 2:,.2f}!"
+        )
+
+    elif sub == "off":
+        live_settings["active"] = False
+        reply("🔴 *Live trading DIMATIKAN.* Bot kembali ke mode simulasi.")
+
+    elif sub == "margin":
+        if len(args) < 2:
+            notional = margin * lev
+            reply(
+                f"💰 *Margin sekarang: ${margin:,.2f}/pair*\n"
+                f"Notional: ${notional:,.2f}/pair\n\n"
+                f"_margin = modal yang kamu RISIKO per pair_\n"
+                f"_notional = margin × leverage = nilai posisi_\n\n"
+                f"Usage: `/live margin <usd>`"
+            ); return
+        try:
+            val = float(args[1])
+            if val < 1 or val > 100_000:
+                reply("Margin harus antara $1 – $100,000."); return
+            live_settings["margin_usd"] = val
+            notional_new = val * lev
+            reply(
+                f"✅ *Margin: ${val:,.2f}/pair*\n"
+                f"Notional: ~${notional_new:,.2f}/pair (× {lev:.0f}x)\n"
+                f"Total margin 2 pair: ${val * 2:,.2f}"
+            )
+        except ValueError:
+            reply("Angkanya tidak valid.")
+
+    elif sub == "lev":
+        if len(args) < 2:
+            reply(
+                f"📊 Leverage sekarang: *{lev:.0f}x*\n"
+                f"Usage: `/live lev <n>`\n\n"
+                f"_💡 Ini juga set leverage langsung ke exchange kalau Paradex terhubung_"
+            ); return
+        try:
+            val = float(args[1])
+            if not (1 <= val <= 200):
+                reply("Leverage harus 1x – 200x."); return
+            live_settings["leverage"] = val
+            notional_new = margin * val
+            reply_msg = (
+                f"✅ *Leverage: {val:.0f}x*\n"
+                f"Notional: ~${notional_new:,.2f}/pair"
+            )
+            # Apply ke exchange sekarang juga jika connected
+            if _executor and _executor.is_ready():
+                eth_ok = _executor.set_leverage(MARKET_ETH, val)
+                btc_ok = _executor.set_leverage(MARKET_BTC, val)
+                reply_msg += (
+                    f"\n\n*Apply ke exchange:*\n"
+                    f"ETH: {'✅' if eth_ok else '❌'} | BTC: {'✅' if btc_ok else '❌'}"
+                )
+            reply(reply_msg)
+        except ValueError:
+            reply("Angkanya tidak valid.")
+
+    elif sub == "type":
+        if len(args) < 2:
+            reply(f"Order type sekarang: *{otype}*\nUsage: `/live type market|limit`"); return
+        t = args[1].upper()
+        if t not in ("MARKET", "LIMIT"):
+            reply("Harus `market` atau `limit`."); return
+        live_settings["order_type"] = t
+        reply(f"✅ Order type: *{t}*")
+
+    elif sub == "dryrun":
+        if len(args) < 2:
+            reply(f"Dryrun mode: *{'ON' if dryrun else 'OFF'}*\nUsage: `/live dryrun on|off`"); return
+        val = args[1].lower()
+        if val == "on":
+            live_settings["dryrun"] = True
+            reply("🧪 *Dryrun mode ON* — order akan dilog tapi tidak dikirim ke Paradex.")
+        elif val == "off":
+            live_settings["dryrun"] = False
+            reply("✅ *Dryrun mode OFF* — order sungguhan akan dikirim ke Paradex.")
+        else:
+            reply("Gunakan `on` atau `off`.")
+
+    else:
+        reply(
+            "❓ Command tidak dikenal.\n\n"
+            "*Usage:*\n`/live` — status\n`/live on|off` — toggle\n"
+            "`/live margin <usd>` | `/live lev <n>`\n"
+            "`/live type market|limit` | `/live dryrun on|off`"
+        )
