@@ -230,8 +230,9 @@ class ParadexExecutor:
     def set_leverage(self, market: str, leverage: float) -> bool:
         """
         Set leverage untuk market tertentu.
-        Paradex endpoint: POST /account/leverage
-        Body: {"market": "ETH-USD-PERP", "leverage": 40}
+        Paradex endpoint: POST /v1/account/margin
+        Ref: docs.paradex.trade/api/prod/account/set-margin-configuration
+        Body: {"market": "ETH-USD-PERP", "max_leverage": "40"}
         """
         if not self.is_ready():
             return False
@@ -241,7 +242,8 @@ class ParadexExecutor:
 
         # Coba via paradex-py method dulu
         try:
-            for fn_name in ("update_leverage", "set_leverage", "change_leverage"):
+            for fn_name in ("update_leverage", "set_leverage", "change_leverage",
+                            "set_margin_config", "update_margin"):
                 fn = getattr(self._pdx.api_client, fn_name, None)
                 if fn:
                     fn(market=market, leverage=lev_int)
@@ -250,23 +252,17 @@ class ParadexExecutor:
         except Exception as e:
             logger.info(f"api_client leverage method gagal: {e} — trying REST")
 
-        # Paradex REST: POST /account/leverage
-        result = self._request("POST", "/account/leverage", {
-            "market":   market,
-            "leverage": lev_int,
-        })
-        if result is not None:
-            logger.info(f"✅ Leverage set via /account/leverage: {market} {lev_int}x")
-            return True
-
-        # Fallback: PUT /account/leverage
-        result = self._request("PUT", "/account/leverage", {
-            "market":   market,
-            "leverage": lev_int,
-        })
-        if result is not None:
-            logger.info(f"✅ Leverage set via PUT /account/leverage: {market} {lev_int}x")
-            return True
+        # Paradex REST: POST /account/margin (endpoint yang benar)
+        # max_leverage = string sesuai Paradex API spec
+        for body in [
+            {"market": market, "max_leverage": str(lev_int)},
+            {"market": market, "max_leverage": lev_int},
+            {"market": market, "leverage": str(lev_int)},
+        ]:
+            result = self._request("POST", "/account/margin", body)
+            if result is not None:
+                logger.info(f"✅ Leverage set: {market} {lev_int}x | body={body}")
+                return True
 
         logger.warning(
             f"set_leverage gagal: {market} {lev_int}x — "
