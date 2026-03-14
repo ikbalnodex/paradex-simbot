@@ -1,8 +1,37 @@
 """
 paradex_live.py — Paradex Live Trading Module
-High-level interface untuk bot: command handler, open/close, toggle live.
+
+FIXES:
+1. /pdx close — close semua posisi via command
+2. Sizing formula yang benar + penjelasan margin vs notional
+3. set_leverage dipanggil sebelum setiap order
+4. /live dryrun + preview sizing
+
+═══════════════════════════════════════════════════
+SIZING FORMULA — BACA INI DULU
+═══════════════════════════════════════════════════
+
+margin_usd = modal yang kamu RISIKO (yang bisa hilang kalau liq)
+leverage   = multiplier
+notional   = margin_usd × leverage  ← nilai posisi sebenarnya
+
+Contoh:
+  margin=$30, lev=40x
+  notional = $30 × 40 = $1,200
+  eth_qty  = $1,200 / $2,100 = 0.5714 ETH
+  btc_qty  = $1,200 / $85,000 = 0.01412 BTC
+
+Dengan balance $100:
+  Pakai margin=$30/pair × 2 pair = $60 total margin
+  Notional exposed = $1,200 × 2 = $2,400
+  Yang bisa liq: hanya $60
+
+Kenapa exchange tampilkan "Margin Req $0.3"?
+  → Itu kalkulasi exchange berdasarkan leverage yang MEREKA set
+  → Kalau leverage default exchange = 50x, margin req = $15/50 = $0.3
+  → SOLUSI: set_leverage() HARUS berhasil sebelum order
+═══════════════════════════════════════════════════
 """
-import os
 import logging
 from typing import Optional
 
@@ -16,21 +45,21 @@ logger = logging.getLogger(__name__)
 
 live_settings: dict = {
     "active":     False,
-    "margin_usd": 100.0,
+    "margin_usd": 100.0,   # margin per pair yang kamu risiko
     "leverage":   10.0,
     "order_type": "MARKET",
-    "dryrun":     False,      # True = log only, tidak kirim order
+    "dryrun":     False,
 }
 
 _executor: Optional[ParadexExecutor] = None
 
-# Market symbols di Paradex
 MARKET_ETH = "ETH-USD-PERP"
 MARKET_BTC = "BTC-USD-PERP"
+ALL_MARKETS = [MARKET_ETH, MARKET_BTC]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public helpers (dipanggil dari monk_bot_b.py)
+# Public helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_executor() -> Optional[ParadexExecutor]:
@@ -42,10 +71,6 @@ def is_live_active() -> bool:
 
 
 def get_health_positions() -> str:
-    """
-    Dipanggil dari /health di monk_bot_b.py.
-    Return string blok posisi Paradex live, atau "" kalau tidak ada.
-    """
     if not is_live_active():
         return ""
     try:
@@ -72,7 +97,7 @@ def get_health_positions() -> str:
             f"┌─────────────────────\n"
             + _line(eth_pos, "ETH")
             + _line(btc_pos, "BTC")
-            + f"│ Margin: ${live_settings['margin_usd']:,.0f} | Lev: {live_settings['leverage']:.0f}x\n"
+            + f"│ Margin: ${live_settings['margin_usd']:,.0f}/pair | Lev: {live_settings['leverage']:.0f}x\n"
             + f"└─────────────────────\n"
         )
     except Exception as e:
@@ -81,22 +106,51 @@ def get_health_positions() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sizing helper
+# Sizing
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _calc_sizes(btc_price: float, eth_price: float):
     """
-    Return (eth_qty, btc_qty) berdasarkan live_settings margin & leverage.
-    Dollar-neutral 50/50 antara ETH dan BTC leg.
-    """
-    margin  = float(live_settings["margin_usd"])
-    lev     = float(live_settings["leverage"])
-    notional = margin * lev
-    half     = notional / 2.0
+    notional = margin × leverage
+    qty      = notional / price
 
-    eth_qty = round(half / eth_price, 4)
-    btc_qty = round(half / btc_price, 6)
+    Contoh margin=$30, lev=40x, eth=$2100:
+      notional = $1,200
+      eth_qty  = 0.5714
+    """
+    margin   = float(live_settings["margin_usd"])
+    lev      = float(live_settings["leverage"])
+    notional = margin * lev
+
+    eth_qty = notional / eth_price
+    btc_qty = notional / btc_price
+
+    logger.info(
+        f"Sizing: margin=${margin} × lev={lev}x = notional=${notional:.2f}/pair | "
+        f"ETH={eth_qty:.6f}@${eth_price} BTC={btc_qty:.7f}@${btc_price}"
+    )
     return eth_qty, btc_qty
+
+
+def calc_order_preview(btc_price: float, eth_price: float) -> str:
+    margin   = float(live_settings["margin_usd"])
+    lev      = float(live_settings["leverage"])
+    notional = margin * lev
+    eth_qty, btc_qty = _calc_sizes(btc_price, eth_price)
+    return (
+        f"┌─────────────────────\n"
+        f"│ *Order Preview (per pair):*\n"
+        f"│ Margin risiko: *${margin:,.2f}*/pair\n"
+        f"│ Leverage:      *{lev:.0f}x*\n"
+        f"│ Notional:      *${notional:,.2f}*/pair\n"
+        f"│ ETH qty:  {eth_qty:.4f} ETH @ ${eth_price:,.2f}\n"
+        f"│ BTC qty:  {btc_qty:.5f} BTC @ ${btc_price:,.2f}\n"
+        f"│ Margin req exchange: ~${notional/lev:,.2f}/pair\n"
+        f"│ Total margin 2 pair: *${margin * 2:,.2f}*\n"
+        f"└─────────────────────\n"
+        f"_💡 Margin Req di exchange = Notional ÷ Leverage yang aktif_\n"
+        f"_Kalau tidak sesuai, cek `/pdx` apakah leverage berhasil diset_\n"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -104,86 +158,85 @@ def _calc_sizes(btc_price: float, eth_price: float):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def live_open_or_sim(
-    strategy: str,
+    strategy:  str,
     btc_price: float,
     eth_price: float,
     sim_fn=None,
 ) -> str:
-    """
-    Buka posisi live di Paradex.
-    strategy: "S1" (Long BTC / Short ETH) atau "S2" (Long ETH / Short BTC)
-    Returns pesan ringkasan untuk dikirim ke Telegram.
-    """
     if not is_live_active():
         if sim_fn:
             return sim_fn()
         return ""
 
     eth_qty, btc_qty = _calc_sizes(btc_price, eth_price)
-    margin  = live_settings["margin_usd"]
-    lev     = live_settings["leverage"]
-    otype   = live_settings["order_type"]
-    dryrun  = live_settings["dryrun"]
+    margin   = live_settings["margin_usd"]
+    lev      = live_settings["leverage"]
+    notional = margin * lev
+    otype    = live_settings["order_type"]
+    dryrun   = live_settings["dryrun"]
 
     if strategy.upper() == "S1":
-        eth_side = "SELL"   # Short ETH
-        btc_side = "BUY"    # Long BTC
+        eth_side  = "SELL"
+        btc_side  = "BUY"
         direction = "Long BTC / Short ETH"
     else:
-        eth_side = "BUY"    # Long ETH
-        btc_side = "SELL"   # Short BTC
+        eth_side  = "BUY"
+        btc_side  = "SELL"
         direction = "Long ETH / Short BTC"
 
     if dryrun:
-        logger.info(f"[DRYRUN] Would open {strategy}: ETH {eth_side} {eth_qty} | BTC {btc_side} {btc_qty}")
+        logger.info(f"[DRYRUN] Would open {strategy}: ETH {eth_side} {eth_qty:.4f} | BTC {btc_side} {btc_qty:.5f}")
         return (
             f"\n🧪 *[DRYRUN] Live Order Disimulasikan — {strategy}*\n"
             f"┌─────────────────────\n"
-            f"│ ETH: *{eth_side}* {eth_qty} @ ${eth_price:,.2f}\n"
-            f"│ BTC: *{btc_side}* {btc_qty} @ ${btc_price:,.2f}\n"
-            f"│ Margin: ${margin:,.0f} | Lev: {lev:.0f}x\n"
+            f"│ *{direction}*\n"
+            f"│ ETH: *{eth_side}* {eth_qty:.4f} @ ${eth_price:,.2f}\n"
+            f"│ BTC: *{btc_side}* {btc_qty:.5f} @ ${btc_price:,.2f}\n"
+            f"│ Margin: ${margin:,.2f}/pair | Lev: {lev:.0f}x | Notional: ~${notional:,.2f}/pair\n"
             f"└─────────────────────\n"
             f"_Dryrun mode — tidak ada order sungguhan yang dikirim._\n"
         )
 
-    # Kirim order ke Paradex
+    # ── Set leverage SEBELUM order ─────────────────────────────────────────
+    eth_lev_ok = _executor.set_leverage(MARKET_ETH, lev)
+    btc_lev_ok = _executor.set_leverage(MARKET_BTC, lev)
+    lev_status = "✅" if (eth_lev_ok and btc_lev_ok) else "⚠️ gagal set lev"
+
+    # ── Kirim order ────────────────────────────────────────────────────────
     eth_result = _executor.place_order(MARKET_ETH, eth_side, eth_qty, order_type=otype)
     btc_result = _executor.place_order(MARKET_BTC, btc_side, btc_qty, order_type=otype)
 
     eth_ok = eth_result is not None
     btc_ok = btc_result is not None
-
     eth_id = eth_result.get("id", "?") if eth_result else "FAILED"
     btc_id = btc_result.get("id", "?") if btc_result else "FAILED"
 
     status_e = "✅" if eth_ok else "❌"
     status_b = "✅" if btc_ok else "❌"
 
-    logger.info(f"Live open {strategy}: ETH={eth_ok} BTC={btc_ok}")
+    logger.info(f"Live open {strategy}: ETH={eth_ok} BTC={btc_ok} | lev={lev_status}")
 
     return (
         f"\n🔴 *[LIVE] Posisi Dibuka — {strategy}*\n"
         f"┌─────────────────────\n"
         f"│ *{direction}*\n"
-        f"│ ETH: {status_e} {eth_side} {eth_qty} @ ${eth_price:,.2f} | ID: `{eth_id}`\n"
-        f"│ BTC: {status_b} {btc_side} {btc_qty} @ ${btc_price:,.2f} | ID: `{btc_id}`\n"
-        f"│ Margin: ${margin:,.0f} | Lev: {lev:.0f}x | Type: {otype}\n"
+        f"│ ETH: {status_e} {eth_side} {eth_qty:.4f} @ ${eth_price:,.2f} | ID: `{eth_id}`\n"
+        f"│ BTC: {status_b} {btc_side} {btc_qty:.5f} @ ${btc_price:,.2f} | ID: `{btc_id}`\n"
+        f"│ Margin: ${margin:,.2f}/pair | Lev: {lev:.0f}x {lev_status}\n"
+        f"│ Notional: ~${notional:,.2f}/pair\n"
         f"└─────────────────────\n"
         + ("_⚠️ Salah satu order GAGAL — cek posisi manual!_\n" if not (eth_ok and btc_ok) else "")
+        + ("_⚠️ Leverage gagal diset — cek log untuk detail_\n" if not (eth_lev_ok and btc_lev_ok) else "")
     )
 
 
 def live_close_or_sim(
-    strategy: str,
+    strategy:  str,
     btc_price: float,
     eth_price: float,
-    reason:  str  = "EXIT",
-    sim_fn   = None,
+    reason:    str = "EXIT",
+    sim_fn=None,
 ) -> str:
-    """
-    Tutup posisi live di Paradex.
-    Returns pesan ringkasan untuk Telegram.
-    """
     if not is_live_active():
         if sim_fn:
             return sim_fn()
@@ -199,9 +252,7 @@ def live_close_or_sim(
             f"_Reason: {reason} | Dryrun mode aktif._\n"
         )
 
-    # Sync dulu baru close
     _executor.sync_all()
-
     eth_result = _executor.close_position(MARKET_ETH, order_type=otype)
     btc_result = _executor.close_position(MARKET_BTC, order_type=otype)
 
@@ -212,7 +263,6 @@ def live_close_or_sim(
 
     status_e = "✅" if eth_ok else "⚠️"
     status_b = "✅" if btc_ok else "⚠️"
-
     reason_emoji = {"EXIT": "✅", "TP": "🎯", "TSL": "⛔", "INVALID": "⚠️"}.get(reason, "🔴")
 
     logger.info(f"Live close {strategy} [{reason}]: ETH={eth_ok} BTC={btc_ok}")
@@ -227,26 +277,68 @@ def live_close_or_sim(
     )
 
 
+def live_close_all_command() -> str:
+    """
+    Close semua posisi via command manual (/pdx close).
+    Tidak butuh price karena pakai MARKET order.
+    """
+    if _executor is None or not _executor.is_ready():
+        return "⚠️ Paradex belum terhubung."
+
+    dryrun = live_settings.get("dryrun", False)
+    if dryrun:
+        return "🧪 *[DRYRUN]* Close semua posisi disimulasikan — dryrun mode aktif."
+
+    _executor.sync_all()
+    positions = _executor.get_all_positions()
+
+    if not positions:
+        return "ℹ️ *Tidak ada posisi terbuka di Paradex.*"
+
+    results = _executor.close_all_positions(order_type="MARKET")
+
+    lines = []
+    all_ok = True
+    for market, result in results.items():
+        ok = result is not None
+        if not ok:
+            all_ok = False
+        order_id = result.get("id", "?") if result else "FAILED"
+        pos      = positions.get(market, {})
+        side     = pos.get("side", "?")
+        size     = abs(pos.get("size", 0))
+        lines.append(f"│ {'✅' if ok else '❌'} {market}: close {side} {size} | ID: `{order_id}`")
+
+    return (
+        f"🔴 *[LIVE] Close All Positions*\n"
+        f"┌─────────────────────\n"
+        + "\n".join(lines)
+        + f"\n└─────────────────────\n"
+        + ("✅ Semua posisi berhasil ditutup.\n" if all_ok else "⚠️ Beberapa posisi gagal ditutup — cek manual!\n")
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # /pdx command handler
 # ─────────────────────────────────────────────────────────────────────────────
 
 def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
     """
-    /pdx                          — status koneksi
-    /pdx init <jwt> <address>     — init executor
-    /pdx balance                  — saldo akun
-    /pdx fills                    — history fills
-    /pdx cancel                   — cancel semua order
-    /pdx sync                     — refresh posisi
+    /pdx                             — status koneksi
+    /pdx init [l1|l2] <key> <addr>  — init executor
+    /pdx balance                     — saldo akun
+    /pdx fills                       — history fills
+    /pdx cancel                      — cancel open orders (bukan close posisi)
+    /pdx close                       — close semua posisi ← [NEW]
+    /pdx sync                        — refresh posisi
+    /pdx preview <btc> <eth>         — preview sizing
+    /pdx lev                         — cek / set leverage langsung
     """
-    global _executor  # ← harus di sini, paling atas fungsi
+    global _executor
 
     def reply(msg):
         if send_reply_fn:
             send_reply_fn(msg, chat_id)
-
-    global _executor
 
     sub = args[0].lower() if args else "status"
 
@@ -255,8 +347,9 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         if _executor is None:
             reply(
                 "🔴 *Paradex: Belum terhubung*\n\n"
-                "Gunakan:\n`/pdx init <jwt_token> <account_address>`\n\n"
-                "_JWT dan address bisa didapat dari Paradex app > Settings > API Keys_"
+                "Gunakan:\n`/pdx init l2 <key> <address>`\n\n"
+                "📍 *Cara dapat key:*\n"
+                "Paradex app → klik address kanan atas → *Export Private Key*"
             )
         elif not _executor.is_ready():
             reply("⚠️ *Paradex: Executor ada tapi koneksi gagal.*\nCoba `/pdx init` ulang.")
@@ -275,7 +368,6 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
                 f"│ UPnL:            ${bal.get('unrealized_pnl', 0):+,.2f}\n"
             ) if bal else "│ Balance: (gagal load)\n"
 
-            # Sync dan tampilkan posisi aktif
             _executor.sync_all()
             eth_pos = _executor.get_live_position(MARKET_ETH)
             btc_pos = _executor.get_live_position(MARKET_BTC)
@@ -286,7 +378,8 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
                 sign = "+" if p["unrealized_pnl"] >= 0 else ""
                 return (
                     f"│ {label}: *{p['side']}* {abs(p['size'])} "
-                    f"@ ${p['avg_entry']:,.2f} | UPnL: *{sign}${p['unrealized_pnl']:,.2f}*\n"
+                    f"@ ${p['avg_entry']:,.2f} | Lev: {p['leverage']:.0f}x | "
+                    f"UPnL: *{sign}${p['unrealized_pnl']:,.2f}*\n"
                 )
 
             pos_block = (
@@ -295,8 +388,8 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
                 + _pos_line(btc_pos, "BTC")
             ) if (eth_pos or btc_pos) else "│\n│ 📍 Posisi: — tidak ada\n"
 
-            live_str  = "🟢 AKTIF" if active else "🔴 OFF"
-            dr_str    = " 🧪 DRYRUN" if dryrun else ""
+            live_str = "🟢 AKTIF" if active else "🔴 OFF"
+            dr_str   = " 🧪 DRYRUN" if dryrun else ""
             reply(
                 f"✅ *Paradex Dashboard*{dr_str}\n"
                 f"┌─────────────────────\n"
@@ -304,15 +397,17 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
                 f"{bal_str}"
                 f"│\n│ ⚙️ *Trading Settings:*\n"
                 f"│ Status:     {live_str}\n"
-                f"│ Margin:     *${margin:,.0f}* per pair\n"
+                f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
                 f"│ Leverage:   *{lev:.0f}x*\n"
-                f"│ Notional:   ~${notional:,.0f} (margin × lev)\n"
+                f"│ Notional:   ~*${notional:,.2f}*/pair\n"
                 f"│ Order type: {otype}\n"
                 f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
                 f"{pos_block}"
                 f"└─────────────────────\n"
-                f"_`/pdx balance` | `/pdx fills` | `/pdx cancel` | `/pdx sync`_\n"
-                f"_`/live on|off` | `/live margin` | `/live lev` | `/live dryrun`_"
+                f"_`/pdx balance` | `/pdx fills` | `/pdx sync`_\n"
+                f"_`/pdx cancel` — cancel orders | `/pdx close` — close posisi_\n"
+                f"_`/pdx preview <btc> <eth>` | `/pdx lev` — cek leverage_\n"
+                f"_`/live on|off` | `/live margin` | `/live lev`_"
             )
 
     # ── Init ────────────────────────────────────────────────────
@@ -330,17 +425,14 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
             )
             return
 
-        # Auto-detect: kalau args[1] adalah "l1" atau "l2", args[2] = key, args[3] = address
-        # Kalau tidak ada prefix, fallback ke L2
         if args[1].lower() in ("l1", "l2"):
-            mode    = args[1].lower()
+            mode = args[1].lower()
             if len(args) < 4:
                 reply("⚠️ Kurang argumen. Contoh: `/pdx init l2 <key> <address>`")
                 return
             key     = args[2]
             address = args[3]
         else:
-            # Tanpa prefix = L2
             mode    = "l2"
             key     = args[1]
             address = args[2]
@@ -371,10 +463,71 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         except Exception as e:
             reply(f"❌ *Error saat init:* `{e}`")
 
+    # ── Close ALL positions ← [NEW] ──────────────────────────────
+    elif sub == "close":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+        reply("⏳ Menutup semua posisi...")
+        msg = live_close_all_command()
+        reply(msg)
+
+    # ── Leverage check/set ← [NEW] ────────────────────────────────
+    elif sub == "lev":
+        if _executor is None or not _executor.is_ready():
+            reply("⚠️ Paradex belum terhubung."); return
+
+        # Kalau ada arg kedua = set leverage sekarang
+        if len(args) >= 2:
+            try:
+                lev_val = float(args[1])
+                if not (1 <= lev_val <= 200):
+                    reply("Leverage harus 1–200x."); return
+                live_settings["leverage"] = lev_val
+                eth_ok = _executor.set_leverage(MARKET_ETH, lev_val)
+                btc_ok = _executor.set_leverage(MARKET_BTC, lev_val)
+                reply(
+                    f"✅ *Leverage diupdate: {lev_val:.0f}x*\n"
+                    f"ETH: {'✅' if eth_ok else '❌'} | BTC: {'✅' if btc_ok else '❌'}\n"
+                    f"_Cek posisi di Paradex UI untuk konfirmasi_"
+                )
+            except ValueError:
+                reply("Angkanya tidak valid. Contoh: `/pdx lev 40`")
+        else:
+            # Tampilkan leverage dari posisi aktif
+            _executor.sync_all()
+            eth_pos = _executor.get_live_position(MARKET_ETH)
+            btc_pos = _executor.get_live_position(MARKET_BTC)
+            eth_lev = eth_pos.get("leverage", "?") if eth_pos else "No pos"
+            btc_lev = btc_pos.get("leverage", "?") if btc_pos else "No pos"
+            lev_set = live_settings["leverage"]
+            reply(
+                f"📊 *Leverage Status*\n"
+                f"┌─────────────────────\n"
+                f"│ Setting bot: *{lev_set:.0f}x*\n"
+                f"│ ETH aktif:   {eth_lev}x\n"
+                f"│ BTC aktif:   {btc_lev}x\n"
+                f"└─────────────────────\n"
+                f"_Untuk set: `/pdx lev <nilai>` atau `/live lev <nilai>`_"
+            )
+
+    # ── Preview sizing ───────────────────────────────────────────
+    elif sub == "preview":
+        if len(args) < 3:
+            reply(
+                "Usage: `/pdx preview <btc_price> <eth_price>`\n"
+                "Contoh: `/pdx preview 85000 2100`"
+            ); return
+        try:
+            btc_p = float(args[1])
+            eth_p = float(args[2])
+            reply(f"📐 *Order Size Preview:*\n{calc_order_preview(btc_p, eth_p)}")
+        except ValueError:
+            reply("Harga tidak valid.")
+
     # ── Balance ─────────────────────────────────────────────────
     elif sub == "balance":
         if _executor is None or not _executor.is_ready():
-            reply("⚠️ Paradex belum terhubung. Gunakan `/pdx init` dulu."); return
+            reply("⚠️ Paradex belum terhubung."); return
         bal = _executor.get_balance()
         if not bal:
             reply("❌ Gagal ambil balance dari Paradex."); return
@@ -409,16 +562,21 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         reply(
             f"📋 *Recent Fills ({len(fills)}):*\n"
             f"┌─────────────────────\n"
-            + "\n".join(lines) +
-            f"\n└─────────────────────\n"
+            + "\n".join(lines)
+            + f"\n└─────────────────────\n"
         )
 
-    # ── Cancel ──────────────────────────────────────────────────
+    # ── Cancel open orders (bukan close posisi) ──────────────────
     elif sub == "cancel":
         if _executor is None or not _executor.is_ready():
             reply("⚠️ Paradex belum terhubung."); return
         ok = _executor.cancel_all_orders()
-        reply("✅ *Semua open orders dibatalkan.*" if ok else "❌ Gagal cancel orders.")
+        reply(
+            "✅ *Semua open orders dibatalkan.*\n"
+            "_💡 Ini hanya cancel pending orders, bukan close posisi._\n"
+            "_Untuk close posisi: `/pdx close`_"
+            if ok else "❌ Gagal cancel orders."
+        )
 
     # ── Sync ────────────────────────────────────────────────────
     elif sub == "sync":
@@ -428,10 +586,12 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         eth_pos = _executor.get_live_position(MARKET_ETH)
         btc_pos = _executor.get_live_position(MARKET_BTC)
         def _pos_str(p, label):
-            if not p: return f"│ {label}: Tidak ada posisi\n"
+            if not p:
+                return f"│ {label}: Tidak ada posisi\n"
             return (
                 f"│ {label}: {p['side']} {abs(p['size'])} "
-                f"@ ${p['avg_entry']:,.2f} | UPnL: ${p['unrealized_pnl']:+,.2f}\n"
+                f"@ ${p['avg_entry']:,.2f} | Lev: {p['leverage']:.0f}x | "
+                f"UPnL: ${p['unrealized_pnl']:+,.2f}\n"
             )
         reply(
             f"🔄 *Positions synced:*\n"
@@ -444,8 +604,14 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
     else:
         reply(
             "❓ Command tidak dikenal.\n\n"
-            "*Usage:*\n`/pdx` — status\n`/pdx init <jwt> <addr>` — connect\n"
-            "`/pdx balance` — saldo\n`/pdx fills` — history\n`/pdx cancel` — cancel orders\n`/pdx sync` — refresh posisi"
+            "*Usage:*\n"
+            "`/pdx` — status\n"
+            "`/pdx init l2 <key> <addr>` — connect\n"
+            "`/pdx balance` | `/pdx fills` | `/pdx sync`\n"
+            "`/pdx cancel` — cancel pending orders\n"
+            "`/pdx close` — *close semua posisi*\n"
+            "`/pdx lev [nilai]` — cek / set leverage\n"
+            "`/pdx preview <btc> <eth>` — preview sizing"
         )
 
 
@@ -455,10 +621,10 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
 
 def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
     """
-    /live                    — status live trading
-    /live on|off             — toggle live trading
-    /live margin <usd>       — set modal per pair
-    /live lev <n>            — set leverage
+    /live                    — status
+    /live on|off             — toggle
+    /live margin <usd>       — set margin per pair (yang kamu risiko)
+    /live lev <n>            — set leverage + apply ke exchange sekarang
     /live type market|limit  — order type
     /live dryrun on|off      — dryrun mode
     """
@@ -466,81 +632,113 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         if send_reply_fn:
             send_reply_fn(msg, chat_id)
 
-    sub = args[0].lower() if args else "status"
-
+    sub    = args[0].lower() if args else "status"
     margin = live_settings["margin_usd"]
     lev    = live_settings["leverage"]
     otype  = live_settings["order_type"]
     dryrun = live_settings["dryrun"]
 
-    # ── Status ──────────────────────────────────────────────────
     if sub in ("status", ""):
         connected = _executor is not None and _executor.is_ready()
         active    = live_settings["active"]
+        notional  = margin * lev
         dr_str    = " 🧪 *DRYRUN*" if dryrun else ""
         reply(
             f"🔴 *Live Trading Settings*{dr_str}\n\n"
             f"┌─────────────────────\n"
             f"│ Status:     {'🟢 ON' if active else '🔴 OFF'}\n"
             f"│ Paradex:    {'✅ Connected' if connected else '❌ Not connected'}\n"
-            f"│ Margin:     ${margin:,.0f} per pair\n"
-            f"│ Leverage:   {lev:.0f}x\n"
+            f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
+            f"│ Leverage:   *{lev:.0f}x*\n"
+            f"│ Notional:   ~*${notional:,.2f}*/pair\n"
+            f"│ Margin req: ~*${notional/lev:,.2f}*/pair (= margin)\n"
+            f"│ Total used: ~*${margin * 2:,.2f}* (2 pairs)\n"
             f"│ Order type: {otype}\n"
             f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
             f"└─────────────────────\n\n"
+            f"💡 _`/pdx preview <btc> <eth>` untuk lihat qty_\n"
+            f"💡 _`/pdx lev` untuk cek leverage aktif di exchange_\n\n"
             f"*Commands:*\n"
             f"`/live on|off` | `/live margin <usd>`\n"
             f"`/live lev <n>` | `/live type market|limit`\n"
             f"`/live dryrun on|off`"
         )
 
-    # ── Toggle on/off ────────────────────────────────────────────
     elif sub == "on":
         if _executor is None or not _executor.is_ready():
             reply(
                 "⚠️ *Paradex belum terhubung!*\n"
-                "Gunakan dulu: `/pdx init <jwt> <address>`"
+                "Gunakan dulu: `/pdx init l2 <key> <address>`"
             ); return
         live_settings["active"] = True
-        dr_note = "\n🧪 *Dryrun mode ON* — tidak ada order sungguhan." if dryrun else ""
+        notional = margin * lev
+        dr_note  = "\n🧪 *Dryrun mode ON* — tidak ada order sungguhan." if dryrun else ""
         reply(
             f"🟢 *Live trading AKTIF!*{dr_note}\n\n"
-            f"Margin: ${margin:,.0f} | Lev: {lev:.0f}x | Type: {otype}\n"
-            f"_Bot akan kirim order ke Paradex saat sinyal entry/exit muncul._\n\n"
-            f"⚠️ Pastikan balance cukup dan setting sudah benar!"
+            f"Margin: *${margin:,.2f}*/pair | Lev: *{lev:.0f}x*\n"
+            f"Notional: ~*${notional:,.2f}*/pair\n"
+            f"Total margin 2 pair: *${margin * 2:,.2f}*\n\n"
+            f"_Bot akan set leverage dan kirim order ke Paradex saat sinyal._\n\n"
+            f"⚠️ Pastikan balance ≥ ${margin * 2:,.2f}!"
         )
 
     elif sub == "off":
         live_settings["active"] = False
         reply("🔴 *Live trading DIMATIKAN.* Bot kembali ke mode simulasi.")
 
-    # ── Margin ──────────────────────────────────────────────────
     elif sub == "margin":
         if len(args) < 2:
-            reply(f"💰 Margin sekarang: *${margin:,.0f}*\nUsage: `/live margin <usd>`"); return
+            notional = margin * lev
+            reply(
+                f"💰 *Margin sekarang: ${margin:,.2f}/pair*\n"
+                f"Notional: ${notional:,.2f}/pair\n\n"
+                f"_margin = modal yang kamu RISIKO per pair_\n"
+                f"_notional = margin × leverage = nilai posisi_\n\n"
+                f"Usage: `/live margin <usd>`"
+            ); return
         try:
             val = float(args[1])
-            if val < 10 or val > 100_000:
-                reply("Margin harus antara $10 – $100,000."); return
+            if val < 1 or val > 100_000:
+                reply("Margin harus antara $1 – $100,000."); return
             live_settings["margin_usd"] = val
-            reply(f"✅ Margin: *${val:,.0f}*")
+            notional_new = val * lev
+            reply(
+                f"✅ *Margin: ${val:,.2f}/pair*\n"
+                f"Notional: ~${notional_new:,.2f}/pair (× {lev:.0f}x)\n"
+                f"Total margin 2 pair: ${val * 2:,.2f}"
+            )
         except ValueError:
             reply("Angkanya tidak valid.")
 
-    # ── Leverage ────────────────────────────────────────────────
     elif sub == "lev":
         if len(args) < 2:
-            reply(f"📊 Leverage sekarang: *{lev:.0f}x*\nUsage: `/live lev <n>`"); return
+            reply(
+                f"📊 Leverage sekarang: *{lev:.0f}x*\n"
+                f"Usage: `/live lev <n>`\n\n"
+                f"_💡 Ini juga set leverage langsung ke exchange kalau Paradex terhubung_"
+            ); return
         try:
             val = float(args[1])
-            if not (1 <= val <= 50):
-                reply("Leverage harus 1x – 50x."); return
+            if not (1 <= val <= 200):
+                reply("Leverage harus 1x – 200x."); return
             live_settings["leverage"] = val
-            reply(f"✅ Leverage: *{val:.0f}x*")
+            notional_new = margin * val
+            reply_msg = (
+                f"✅ *Leverage: {val:.0f}x*\n"
+                f"Notional: ~${notional_new:,.2f}/pair"
+            )
+            # Apply ke exchange sekarang juga jika connected
+            if _executor and _executor.is_ready():
+                eth_ok = _executor.set_leverage(MARKET_ETH, val)
+                btc_ok = _executor.set_leverage(MARKET_BTC, val)
+                reply_msg += (
+                    f"\n\n*Apply ke exchange:*\n"
+                    f"ETH: {'✅' if eth_ok else '❌'} | BTC: {'✅' if btc_ok else '❌'}"
+                )
+            reply(reply_msg)
         except ValueError:
             reply("Angkanya tidak valid.")
 
-    # ── Order type ──────────────────────────────────────────────
     elif sub == "type":
         if len(args) < 2:
             reply(f"Order type sekarang: *{otype}*\nUsage: `/live type market|limit`"); return
@@ -550,7 +748,6 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         live_settings["order_type"] = t
         reply(f"✅ Order type: *{t}*")
 
-    # ── Dryrun ──────────────────────────────────────────────────
     elif sub == "dryrun":
         if len(args) < 2:
             reply(f"Dryrun mode: *{'ON' if dryrun else 'OFF'}*\nUsage: `/live dryrun on|off`"); return
