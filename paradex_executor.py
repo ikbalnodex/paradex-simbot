@@ -230,17 +230,24 @@ class ParadexExecutor:
     def set_leverage(self, market: str, leverage: float) -> bool:
         """
         Set leverage untuk market tertentu.
-        Paradex endpoint: POST /v1/account/margin
-        Ref: docs.paradex.trade/api/prod/account/set-margin-configuration
-        Body: {"market": "ETH-USD-PERP", "max_leverage": "40"}
+
+        NOTE: Paradex tidak menyediakan REST endpoint khusus untuk set leverage
+        secara programatik seperti Binance/Bybit. Leverage di Paradex dikontrol
+        via isolated margin account yang harus dibuat dulu dari UI.
+
+        Workaround: Set leverage MANUAL di Paradex UI sekali saja,
+        lalu bot akan pakai leverage yang sudah di-set tersebut.
+
+        Method ini tetap mencoba paradex-py jika ada method-nya,
+        tapi tidak akan spam REST calls yang 404.
         """
         if not self.is_ready():
             return False
 
         lev_int = int(leverage)
-        logger.info(f"Setting leverage {market} → {lev_int}x")
+        logger.info(f"set_leverage {market} {lev_int}x — mencoba via paradex-py")
 
-        # Coba via paradex-py method dulu
+        # Coba via paradex-py method jika tersedia
         try:
             for fn_name in ("update_leverage", "set_leverage", "change_leverage",
                             "set_margin_config", "update_margin"):
@@ -250,23 +257,13 @@ class ParadexExecutor:
                     logger.info(f"✅ Leverage set via api_client.{fn_name}(): {market} {lev_int}x")
                     return True
         except Exception as e:
-            logger.info(f"api_client leverage method gagal: {e} — trying REST")
+            logger.debug(f"api_client leverage method tidak tersedia: {e}")
 
-        # Paradex REST: POST /account/margin (endpoint yang benar)
-        # max_leverage = string sesuai Paradex API spec
-        for body in [
-            {"market": market, "max_leverage": str(lev_int)},
-            {"market": market, "max_leverage": lev_int},
-            {"market": market, "leverage": str(lev_int)},
-        ]:
-            result = self._request("POST", "/account/margin", body)
-            if result is not None:
-                logger.info(f"✅ Leverage set: {market} {lev_int}x | body={body}")
-                return True
-
-        logger.warning(
-            f"set_leverage gagal: {market} {lev_int}x — "
-            f"order tetap dikirim tapi leverage pakai default exchange"
+        # Paradex tidak punya endpoint REST untuk set leverage — skip REST calls
+        # Leverage harus di-set manual di UI Paradex
+        logger.info(
+            f"ℹ️ set_leverage {market} {lev_int}x: Paradex tidak punya REST endpoint leverage. "
+            f"Set leverage {lev_int}x manual di UI Paradex untuk market ini."
         )
         return False
 
