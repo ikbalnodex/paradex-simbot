@@ -13,6 +13,7 @@ from typing import Optional, Tuple, List, NamedTuple
 
 import requests
 
+import os
 from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
@@ -118,18 +119,28 @@ entry_btc_ret:   Optional[float]   = None
 entry_eth_ret:   Optional[float]   = None
 entry_driver:    Optional[str]     = None
 
+# Baca threshold dari environment variable Railway jika tersedia
+# Set di Railway: ENTRY_THRESHOLD=0.5, EXIT_THRESHOLD=0.2, dst.
+_env_entry     = float(os.environ.get("BOT_ENTRY_THRESHOLD",  os.environ.get("ENTRY_THRESHOLD",  1.5)))
+_env_exit      = float(os.environ.get("BOT_EXIT_THRESHOLD",   os.environ.get("EXIT_THRESHOLD",   0.2)))
+_env_invalid   = float(os.environ.get("BOT_INVALID_THRESHOLD", INVALIDATION_THRESHOLD))
+_env_sl        = float(os.environ.get("BOT_SL_PCT",           1.0))
+_env_lookback  = int(os.environ.get("BOT_LOOKBACK_HOURS",     DEFAULT_LOOKBACK_HOURS))
+_env_heartbeat = int(os.environ.get("BOT_HEARTBEAT_MINUTES",  30))
+_env_capital   = float(os.environ.get("BOT_CAPITAL",          0.0))
+
 settings = {
     "scan_interval":          SCAN_INTERVAL_SECONDS,
-    "entry_threshold":        1.5,
-    "exit_threshold":         0.2,
-    "invalidation_threshold": INVALIDATION_THRESHOLD,
+    "entry_threshold":        _env_entry,
+    "exit_threshold":         _env_exit,
+    "invalidation_threshold": _env_invalid,
     "peak_reversal":          0.3,
     "peak_enabled":           False,
-    "lookback_hours":         DEFAULT_LOOKBACK_HOURS,
-    "heartbeat_minutes":      30,
-    "sl_pct":                 1.0,
+    "lookback_hours":         _env_lookback,
+    "heartbeat_minutes":      _env_heartbeat,
+    "sl_pct":                 _env_sl,
     "redis_refresh_minutes":  REDIS_REFRESH_MINUTES,
-    "capital":                0.0,
+    "capital":                _env_capital,
     "ratio_window_days":      RATIO_WINDOW_DAYS,
     "exit_confirm_scans":     2,
     "exit_confirm_buffer":    0.0,
@@ -196,8 +207,9 @@ pos_data: dict = {
 # =============================================================================
 # Redis
 # =============================================================================
-REDIS_KEY     = "monk_bot:price_history"
-REDIS_KEY_POS = "monk_bot:pos_data"
+REDIS_KEY          = "monk_bot:price_history"
+REDIS_KEY_POS      = "monk_bot:pos_data"
+REDIS_KEY_SETTINGS = "monk_bot:settings"
 
 def _redis_request(method: str, path: str, body=None):
     if not UPSTASH_REDIS_URL or not UPSTASH_REDIS_TOKEN:
@@ -298,6 +310,62 @@ def clear_pos_data_redis() -> bool:
         return True
     except Exception as e:
         logger.warning(f"clear_pos_data_redis gagal: {e}")
+        return False
+
+# =============================================================================
+# Simpan & Muat Settings ke Redis (Persistent)
+# =============================================================================
+_PERSISTENT_KEYS = [
+    "entry_threshold", "exit_threshold", "invalidation_threshold",
+    "sl_pct", "lookback_hours", "heartbeat_minutes", "capital",
+    "eth_size_ratio", "peak_reversal", "peak_enabled",
+    "exit_confirm_scans", "exit_confirm_buffer", "exit_pnl_gate",
+    "sim_enabled", "sim_margin_usd", "sim_leverage", "sim_fee_pct",
+]
+
+def save_settings() -> bool:
+    """Simpan settings yang bisa diubah user ke Redis."""
+    if not UPSTASH_REDIS_URL:
+        return False
+    try:
+        data    = {k: settings[k] for k in _PERSISTENT_KEYS if k in settings}
+        payload = json.dumps(data)
+        result  = _redis_request("POST", f"/set/{REDIS_KEY_SETTINGS}", body=payload)
+        if result and result.get("result") == "OK":
+            logger.debug("Settings disimpan ke Redis")
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"save_settings gagal: {e}")
+        return False
+
+def load_settings() -> bool:
+    """Muat settings dari Redis saat bot start."""
+    if not UPSTASH_REDIS_URL:
+        return False
+    try:
+        result = _redis_request("GET", f"/get/{REDIS_KEY_SETTINGS}")
+        if not result or result.get("result") is None:
+            logger.info("Belum ada settings di Redis — pakai default/env var")
+            return False
+        data = json.loads(result["result"])
+        restored = []
+        for k in _PERSISTENT_KEYS:
+            if k in data and data[k] is not None:
+                try:
+                    if k in ("peak_enabled", "sim_enabled", "sim_regime_filter"):
+                        settings[k] = bool(data[k])
+                    elif k in ("exit_confirm_scans",):
+                        settings[k] = int(data[k])
+                    else:
+                        settings[k] = float(data[k])
+                    restored.append(k)
+                except Exception:
+                    pass
+        logger.info(f"Settings dipulihkan dari Redis: {restored}")
+        return True
+    except Exception as e:
+        logger.warning(f"load_settings gagal: {e}")
         return False
 
 # =============================================================================
@@ -2111,6 +2179,7 @@ def handle_capital_command(args, reply_chat):
         if val < 0 or val > 10_000_000:
             send_reply("Modal harus antara $0 – $10,000,000.", reply_chat); return
         settings["capital"] = val
+        save_settings()
         send_reply(f"💰 Modal *${val:,.0f}* berhasil disimpan.", reply_chat)
     except ValueError:
         send_reply("Angka tidak valid.", reply_chat)
@@ -2174,7 +2243,8 @@ def handle_sltp_command(args, reply_chat):
             send_reply("Harus antara 0 – 10.", reply_chat); return
         if key == "sl":
             settings["sl_pct"] = val
-            send_reply(f"Jarak Trailing SL: *{val}%*.", reply_chat)
+            save_settings()
+            send_reply(f"✅ Trailing SL: *{val}%*\n_Tersimpan._", reply_chat)
         else:
             send_reply("Gunakan `sl`.", reply_chat)
     except ValueError:
@@ -2199,10 +2269,20 @@ def handle_threshold_command(args, reply_chat):
         t_type, val = args[0].lower(), float(args[1])
         if val <= 0 or val > 20:
             send_reply("Harus antara 0 – 20.", reply_chat); return
-        if t_type == "entry":   settings["entry_threshold"] = val; send_reply(f"Entry ±{val}%.", reply_chat)
-        elif t_type == "exit":  settings["exit_threshold"] = val; send_reply(f"Exit/TP ±{val}%.", reply_chat)
-        elif t_type in ("invalid", "invalidation"): settings["invalidation_threshold"] = val; send_reply(f"Invalidasi ±{val}%.", reply_chat)
-        else: send_reply("Gunakan `entry`, `exit`, atau `invalid`.", reply_chat)
+        if t_type == "entry":
+            settings["entry_threshold"] = val
+            save_settings()
+            send_reply(f"✅ Entry threshold: ±{val}%\n_Tersimpan — akan digunakan kembali saat bot restart._", reply_chat)
+        elif t_type == "exit":
+            settings["exit_threshold"] = val
+            save_settings()
+            send_reply(f"✅ Exit/TP threshold: ±{val}%\n_Tersimpan._", reply_chat)
+        elif t_type in ("invalid", "invalidation"):
+            settings["invalidation_threshold"] = val
+            save_settings()
+            send_reply(f"✅ Invalidasi threshold: ±{val}%\n_Tersimpan._", reply_chat)
+        else:
+            send_reply("Gunakan `entry`, `exit`, atau `invalid`.", reply_chat)
     except ValueError:
         send_reply("Angka tidak valid.", reply_chat)
 
@@ -2214,8 +2294,9 @@ def handle_lookback_command(args, reply_chat):
         if val < 1 or val > 24:
             send_reply("Harus antara 1 – 24 jam.", reply_chat); return
         settings["lookback_hours"] = val
+        save_settings()
         prune_history(datetime.now(timezone.utc))
-        send_reply(f"Lookback diatur ke *{val}h*.", reply_chat)
+        send_reply(f"Lookback diatur ke *{val}h*\n_Tersimpan._", reply_chat)
     except ValueError:
         send_reply("Angka tidak valid.", reply_chat)
 
@@ -2227,7 +2308,9 @@ def handle_heartbeat_command(args, reply_chat):
         if val < 0 or val > 120:
             send_reply("Harus antara 0 – 120 menit.", reply_chat); return
         settings["heartbeat_minutes"] = val
-        send_reply("Heartbeat *dinonaktifkan*." if val == 0 else f"Heartbeat setiap *{val} menit*.", reply_chat)
+        settings["heartbeat_minutes"] = val
+        save_settings()
+        send_reply("Heartbeat *dinonaktifkan*." if val == 0 else f"Heartbeat setiap *{val} menit*. _Tersimpan._", reply_chat)
     except ValueError:
         send_reply("Angka tidak valid.", reply_chat)
 
@@ -2562,6 +2645,7 @@ def handle_help_command(reply_chat):
         f"`/pdx preview <btc> <eth>` — preview ukuran order\n"
         f"`/live`                   — status & pengaturan live\n"
         f"`/live on|off`            — aktifkan/nonaktifkan live\n"
+        f"`/live mode normal|x`     — *ganti mode trading*\n"
         f"`/live margin <usd>`      — set margin per pair\n"
         f"`/live lev <n>`           — set leverage\n"
         f"`/live type market|limit` — jenis order\n"
@@ -2647,6 +2731,15 @@ def main_loop():
 
     threading.Thread(target=command_polling_thread, daemon=True).start()
     logger.info("Command listener aktif")
+
+    # Muat settings tersimpan dari Redis (entry_threshold dll)
+    load_settings()
+    logger.info(
+        f"Settings aktif — Entry: ±{settings['entry_threshold']}% | "
+        f"Exit: ±{settings['exit_threshold']}% | "
+        f"Invalid: ±{settings['invalidation_threshold']}% | "
+        f"SL: {settings['sl_pct']}%"
+    )
 
     load_history()
     prune_history(datetime.now(timezone.utc))
