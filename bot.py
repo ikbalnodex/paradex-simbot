@@ -40,6 +40,7 @@ try:
         live_open_or_sim,
         live_close_or_sim,
         is_live_active,
+        is_auto_close_enabled,
         live_settings,
         get_executor,
     )
@@ -62,6 +63,7 @@ except ImportError as _pdx_err:
             send_reply_fn("⚠️ File `paradex_live.py` tidak ditemukan.", chat_id)
 
     def is_live_active(): return False
+    def is_auto_close_enabled(): return True
     def live_open_or_sim(*a, **kw): return ""
     def live_close_or_sim(*a, **kw): return ""
     live_settings = {}
@@ -486,6 +488,8 @@ def process_commands() -> None:
             # /pdx close dihandle di sini supaya bisa reset state bot sekaligus
             "/pdx":       lambda: handle_pdx_close_with_reset(args, chat_id) if (args and args[0].lower() == "close") else handle_pdx_command(args, chat_id, send_reply),
             "/live":      lambda: handle_live_command(args, chat_id, send_reply),
+            # Shortcut toggle auto-close
+            "/autoclose": lambda: handle_live_command(["autoclose"] + args, chat_id, send_reply),
             # Command darurat reset state bot
             "/forceclose": lambda: handle_forceclose_command(chat_id),
             "/resetstate": lambda: handle_forceclose_command(chat_id),
@@ -1794,6 +1798,35 @@ def check_sltp(gap_float, btc_ret, eth_ret, gap):
     et     = settings["exit_threshold"]
     sl_pct = settings["sl_pct"]
 
+    def _do_live_close(reason: str):
+        """Helper: close live position jika auto_close aktif, atau kirim peringatan manual."""
+        if PARADEX_LIVE_AVAILABLE and is_live_active():
+            if is_auto_close_enabled():
+                msg = live_close_or_sim(
+                    active_strategy.value,
+                    float(scan_stats["last_btc_price"]),
+                    float(scan_stats["last_eth_price"]),
+                    reason=reason,
+                    sim_fn=None,
+                )
+                if msg:
+                    send_alert(msg)
+            else:
+                send_alert(
+                    f"⚠️ *[Live] Auto-Close NONAKTIF — {reason} terpicu tapi posisi TIDAK ditutup otomatis.*\n"
+                    f"Strategi: *{active_strategy.value}*\n"
+                    f"Tutup manual via `/pdx close` atau Paradex UI.\n"
+                    f"_Aktifkan kembali: `/live autoclose on`_"
+                )
+        else:
+            sim_msg = sim_close_position(
+                float(scan_stats["last_btc_price"]),
+                float(scan_stats["last_eth_price"]),
+                reason=reason,
+            )
+            if sim_msg:
+                send_alert(sim_msg)
+
     if active_strategy == Strategy.S1:
         if gap_float < trailing_gap_best:
             trailing_gap_best = gap_float
@@ -1801,21 +1834,11 @@ def check_sltp(gap_float, btc_ret, eth_ret, gap):
         if gap_float <= et:
             eth_target, _ = calc_tp_target_price(Strategy.S1)
             send_alert(build_tp_message(btc_ret, eth_ret, gap, entry_gap_value, et, eth_target))
-            if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(active_strategy.value, float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TP", sim_fn=None)
-                if exec_msg: send_alert(exec_msg)
-            else:
-                sim_msg = sim_close_position(float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TP")
-                if sim_msg: send_alert(sim_msg)
+            _do_live_close("TP")
             reset_to_scan(); return True
         if gap_float >= tsl_level:
             send_alert(build_trailing_sl_message(btc_ret, eth_ret, gap, entry_gap_value, trailing_gap_best, tsl_level))
-            if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(active_strategy.value, float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TSL", sim_fn=None)
-                if exec_msg: send_alert(exec_msg)
-            else:
-                sim_msg = sim_close_position(float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TSL")
-                if sim_msg: send_alert(sim_msg)
+            _do_live_close("TSL")
             reset_to_scan(); return True
 
     elif active_strategy == Strategy.S2:
@@ -1825,21 +1848,11 @@ def check_sltp(gap_float, btc_ret, eth_ret, gap):
         if gap_float >= -et:
             eth_target, _ = calc_tp_target_price(Strategy.S2)
             send_alert(build_tp_message(btc_ret, eth_ret, gap, entry_gap_value, -et, eth_target))
-            if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(active_strategy.value, float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TP", sim_fn=None)
-                if exec_msg: send_alert(exec_msg)
-            else:
-                sim_msg = sim_close_position(float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TP")
-                if sim_msg: send_alert(sim_msg)
+            _do_live_close("TP")
             reset_to_scan(); return True
         if gap_float <= tsl_level:
             send_alert(build_trailing_sl_message(btc_ret, eth_ret, gap, entry_gap_value, trailing_gap_best, tsl_level))
-            if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(active_strategy.value, float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TSL", sim_fn=None)
-                if exec_msg: send_alert(exec_msg)
-            else:
-                sim_msg = sim_close_position(float(scan_stats["last_btc_price"]), float(scan_stats["last_eth_price"]), reason="TSL")
-                if sim_msg: send_alert(sim_msg)
+            _do_live_close("TSL")
             reset_to_scan(); return True
 
     return False
@@ -1995,11 +2008,19 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
                 send_alert(build_exit_message(btc_ret, eth_ret, gap, confirm_note=confirm_note))
 
                 if PARADEX_LIVE_AVAILABLE and is_live_active():
-                    exec_msg = live_close_or_sim(
-                        active_strategy.value, float(btc_now), float(eth_now),
-                        reason="EXIT", sim_fn=None,
-                    )
-                    if exec_msg: send_alert(exec_msg)
+                    if is_auto_close_enabled():
+                        exec_msg = live_close_or_sim(
+                            active_strategy.value, float(btc_now), float(eth_now),
+                            reason="EXIT", sim_fn=None,
+                        )
+                        if exec_msg: send_alert(exec_msg)
+                    else:
+                        send_alert(
+                            f"⚠️ *[Live] Auto-Close NONAKTIF — EXIT terpicu tapi posisi TIDAK ditutup otomatis.*\n"
+                            f"Strategi: *{active_strategy.value}*\n"
+                            f"Tutup manual via `/pdx close` atau Paradex UI.\n"
+                            f"_Aktifkan: `/live autoclose on`_"
+                        )
                 else:
                     sim_msg = sim_close_position(float(btc_now), float(eth_now), reason="EXIT")
                     if sim_msg: send_alert(sim_msg)
@@ -2023,8 +2044,15 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
         if active_strategy == Strategy.S1 and gap_float >= invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S1, btc_ret, eth_ret, gap))
             if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(active_strategy.value, float(btc_now), float(eth_now), reason="INVALID", sim_fn=None)
-                if exec_msg: send_alert(exec_msg)
+                if is_auto_close_enabled():
+                    exec_msg = live_close_or_sim(active_strategy.value, float(btc_now), float(eth_now), reason="INVALID", sim_fn=None)
+                    if exec_msg: send_alert(exec_msg)
+                else:
+                    send_alert(
+                        f"⚠️ *[Live] Auto-Close NONAKTIF — INVALIDASI S1 tapi posisi TIDAK ditutup otomatis.*\n"
+                        f"Tutup manual via `/pdx close` atau Paradex UI.\n"
+                        f"_Aktifkan: `/live autoclose on`_"
+                    )
             else:
                 sim_msg = sim_close_position(float(btc_now), float(eth_now), reason="INVALID")
                 if sim_msg: send_alert(sim_msg)
@@ -2033,8 +2061,15 @@ def evaluate_and_transition(btc_ret, eth_ret, gap, btc_now, eth_now, btc_lb, eth
         if active_strategy == Strategy.S2 and gap_float <= -invalid_thresh:
             send_alert(build_invalidation_message(Strategy.S2, btc_ret, eth_ret, gap))
             if PARADEX_LIVE_AVAILABLE and is_live_active():
-                exec_msg = live_close_or_sim(active_strategy.value, float(btc_now), float(eth_now), reason="INVALID", sim_fn=None)
-                if exec_msg: send_alert(exec_msg)
+                if is_auto_close_enabled():
+                    exec_msg = live_close_or_sim(active_strategy.value, float(btc_now), float(eth_now), reason="INVALID", sim_fn=None)
+                    if exec_msg: send_alert(exec_msg)
+                else:
+                    send_alert(
+                        f"⚠️ *[Live] Auto-Close NONAKTIF — INVALIDASI S2 tapi posisi TIDAK ditutup otomatis.*\n"
+                        f"Tutup manual via `/pdx close` atau Paradex UI.\n"
+                        f"_Aktifkan: `/live autoclose on`_"
+                    )
             else:
                 sim_msg = sim_close_position(float(btc_now), float(eth_now), reason="INVALID")
                 if sim_msg: send_alert(sim_msg)
@@ -2713,7 +2748,9 @@ def handle_help_command(reply_chat):
         f"`/live margin <usd>`      — set margin per pair\n"
         f"`/live lev <n>`           — set leverage\n"
         f"`/live type market|limit` — jenis order\n"
-        f"`/live dryrun on|off`     — mode uji coba\n\n"
+        f"`/live dryrun on|off`     — mode uji coba\n"
+        f"`/live autoclose on|off`  — *toggle auto-close posisi*\n"
+        f"`/autoclose on|off`       — shortcut auto-close\n\n"
         f"*— Kesehatan Posisi —*\n"
         f"`/health`           — P&L + margin + likuidasi\n"
         f"`/setpos S1|S2 ...` — daftarkan posisi manual\n"
