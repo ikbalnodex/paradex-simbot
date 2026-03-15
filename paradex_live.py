@@ -6,7 +6,6 @@ FIXES:
 2. Sizing formula yang benar + penjelasan margin vs notional
 3. set_leverage dipanggil sebelum setiap order
 4. /live dryrun + preview sizing
-5. /live autoclose on|off — toggle auto-close posisi ← [NEW]
 
 ═══════════════════════════════════════════════════
 SIZING FORMULA — BACA INI DULU
@@ -45,14 +44,12 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 live_settings: dict = {
-    "active":       False,
-    "margin_usd":   100.0,   # margin per pair yang kamu risiko
-    "leverage":     10.0,
-    "order_type":   "MARKET",
-    "dryrun":       False,
-    "mode":         "normal",  # "normal" = pair divergence | "x" = ikut arah ETH
-    "auto_close":   True,      # True = bot otomatis close saat TP/TSL/EXIT/INVALID
-                               # False = bot hanya kirim notifikasi, tidak eksekusi close
+    "active":     False,
+    "margin_usd": 100.0,   # margin per pair yang kamu risiko
+    "leverage":   10.0,
+    "order_type": "MARKET",
+    "dryrun":     False,
+    "mode":       "normal",  # "normal" = pair divergence | "x" = ikut arah ETH
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,11 +88,6 @@ def is_live_active() -> bool:
     return live_settings["active"] and _executor is not None and _executor.is_ready()
 
 
-def is_auto_close_enabled() -> bool:
-    """Return True jika auto-close aktif (default True)."""
-    return live_settings.get("auto_close", True)
-
-
 def get_health_positions() -> str:
     if not is_live_active():
         return ""
@@ -118,14 +110,12 @@ def get_health_positions() -> str:
                 + "\n"
             )
 
-        ac_str = "✅ ON" if live_settings.get("auto_close", True) else "❌ OFF (manual)"
         return (
             f"\n*🔴 Paradex Live Positions:*\n"
             f"┌─────────────────────\n"
             + _line(eth_pos, "ETH")
             + _line(btc_pos, "BTC")
             + f"│ Margin: ${live_settings['margin_usd']:,.0f}/pair | Lev: {live_settings['leverage']:.0f}x\n"
-            + f"│ Auto-Close: {ac_str}\n"
             + f"└─────────────────────\n"
         )
     except Exception as e:
@@ -258,6 +248,8 @@ def live_open_or_sim(
     lev_status = "✅" if (eth_lev_ok and btc_lev_ok) else "⚠️ gagal set lev"
 
     # ── Cek free collateral sebelum order ──────────────────────────────────
+    # Total margin yang dibutuhkan = margin × 2 (ETH + BTC)
+    # Tambah buffer 10% untuk fee dan slippage
     total_margin_needed = margin * 2 * 1.10
     bal = _executor.get_balance()
     free_collateral = bal.get("free_collateral", 0) if bal else 0
@@ -277,6 +269,7 @@ def live_open_or_sim(
             f"_Kurangi margin dengan `/live margin <usd>` atau deposit lebih._\n"
         )
 
+
     logger.info(f"Margin check OK: free=${free_collateral:.2f} ≥ needed=${total_margin_needed:.2f}")
 
     # ── Kirim ETH order dulu, tunggu konfirmasi, baru BTC ─────────────────
@@ -291,6 +284,7 @@ def live_open_or_sim(
             f"│ BTC: ⏸️ Dibatalkan (menunggu ETH)\n"
             f"_Cek log untuk detail error._\n"
         )
+
 
     # ETH berhasil, lanjut BTC
     btc_result = _executor.place_order(MARKET_BTC, btc_side, btc_qty, order_type=otype)
@@ -417,7 +411,7 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
     /pdx balance                     — saldo akun
     /pdx fills                       — history fills
     /pdx cancel                      — cancel open orders (bukan close posisi)
-    /pdx close                       — close semua posisi
+    /pdx close                       — close semua posisi ← [NEW]
     /pdx sync                        — refresh posisi
     /pdx preview <btc> <eth>         — preview sizing
     /pdx lev                         — cek / set leverage langsung
@@ -448,7 +442,6 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
             otype    = live_settings["order_type"]
             dryrun   = live_settings["dryrun"]
             active   = live_settings["active"]
-            ac_on    = live_settings.get("auto_close", True)
             notional = margin * lev
 
             bal_str = (
@@ -479,26 +472,24 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
 
             live_str = "🟢 AKTIF" if active else "🔴 OFF"
             dr_str   = " 🧪 DRYRUN" if dryrun else ""
-            ac_str   = "✅ ON" if ac_on else "❌ OFF (manual close)"
             reply(
                 f"✅ *Paradex Dashboard*{dr_str}\n"
                 f"┌─────────────────────\n"
                 f"│ Account: `{_executor.account_address[:18]}...`\n"
                 f"{bal_str}"
                 f"│\n│ ⚙️ *Trading Settings:*\n"
-                f"│ Status:      {live_str}\n"
-                f"│ Margin:      *${margin:,.2f}* per pair (risiko)\n"
-                f"│ Leverage:    *{lev:.0f}x*\n"
-                f"│ Notional:    ~*${notional:,.2f}*/pair\n"
-                f"│ Order type:  {otype}\n"
-                f"│ Dryrun:      {'ON 🧪' if dryrun else 'OFF'}\n"
-                f"│ Auto-Close:  {ac_str}\n"
+                f"│ Status:     {live_str}\n"
+                f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
+                f"│ Leverage:   *{lev:.0f}x*\n"
+                f"│ Notional:   ~*${notional:,.2f}*/pair\n"
+                f"│ Order type: {otype}\n"
+                f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
                 f"{pos_block}"
                 f"└─────────────────────\n"
                 f"_`/pdx balance` | `/pdx fills` | `/pdx sync`_\n"
                 f"_`/pdx cancel` — cancel orders | `/pdx close` — close posisi_\n"
                 f"_`/pdx preview <btc> <eth>` | `/pdx lev` — cek leverage_\n"
-                f"_`/live on|off` | `/live margin` | `/live lev` | `/live autoclose on|off`_"
+                f"_`/live on|off` | `/live margin` | `/live lev`_"
             )
 
     # ── Init ────────────────────────────────────────────────────
@@ -554,7 +545,7 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         except Exception as e:
             reply(f"❌ *Error saat init:* `{e}`")
 
-    # ── Close ALL positions ──────────────────────────────────────
+    # ── Close ALL positions ← [NEW] ──────────────────────────────
     elif sub == "close":
         if _executor is None or not _executor.is_ready():
             reply("⚠️ Paradex belum terhubung."); return
@@ -562,11 +553,12 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
         msg = live_close_all_command()
         reply(msg)
 
-    # ── Leverage check/set ────────────────────────────────────────
+    # ── Leverage check/set ← [NEW] ────────────────────────────────
     elif sub == "lev":
         if _executor is None or not _executor.is_ready():
             reply("⚠️ Paradex belum terhubung."); return
 
+        # Kalau ada arg kedua = set leverage sekarang
         if len(args) >= 2:
             try:
                 lev_val = float(args[1])
@@ -583,6 +575,7 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
             except ValueError:
                 reply("Angkanya tidak valid. Contoh: `/pdx lev 40`")
         else:
+            # Tampilkan leverage dari posisi aktif
             _executor.sync_all()
             eth_pos = _executor.get_live_position(MARKET_ETH)
             btc_pos = _executor.get_live_position(MARKET_BTC)
@@ -655,7 +648,7 @@ def handle_pdx_command(args: list, chat_id: str, send_reply_fn=None):
             + f"\n└─────────────────────\n"
         )
 
-    # ── Cancel open orders ───────────────────────────────────────
+    # ── Cancel open orders (bukan close posisi) ──────────────────
     elif sub == "cancel":
         if _executor is None or not _executor.is_ready():
             reply("⚠️ Paradex belum terhubung."); return
@@ -716,7 +709,6 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
     /live lev <n>            — set leverage + apply ke exchange sekarang
     /live type market|limit  — order type
     /live dryrun on|off      — dryrun mode
-    /live autoclose on|off   — toggle auto-close posisi [NEW]
     """
     def reply(msg):
         if send_reply_fn:
@@ -727,7 +719,6 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
     lev    = live_settings["leverage"]
     otype  = live_settings["order_type"]
     dryrun = live_settings["dryrun"]
-    ac_on  = live_settings.get("auto_close", True)
 
     if sub in ("status", ""):
         connected = _executor is not None and _executor.is_ready()
@@ -740,29 +731,26 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
             if mode_val == "normal" else
             "S1: Short ETH+BTC | S2: Long ETH+BTC"
         )
-        dr_str = " 🧪 *DRYRUN*" if dryrun else ""
-        ac_str = "✅ ON" if ac_on else "❌ OFF (manual close)"
+        dr_str    = " 🧪 *DRYRUN*" if dryrun else ""
         reply(
             f"🔴 *Live Trading Settings*{dr_str}\n\n"
             f"┌─────────────────────\n"
-            f"│ Status:      {'🟢 ON' if active else '🔴 OFF'}\n"
-            f"│ Paradex:     {'✅ Connected' if connected else '❌ Not connected'}\n"
-            f"│ Mode:        *{mode_str}*\n"
+            f"│ Status:     {'🟢 ON' if active else '🔴 OFF'}\n"
+            f"│ Paradex:    {'✅ Connected' if connected else '❌ Not connected'}\n"
+            f"│ Mode:       *{mode_str}*\n"
             f"│ {mode_hint}\n"
-            f"│ Margin:      *${margin:,.2f}* per pair (risiko)\n"
-            f"│ Leverage:    *{lev:.0f}x*\n"
-            f"│ Notional:    ~*${notional:,.2f}*/pair\n"
-            f"│ Total used:  ~*${margin * 2:,.2f}* (2 pairs)\n"
-            f"│ Order type:  {otype}\n"
-            f"│ Dryrun:      {'ON 🧪' if dryrun else 'OFF'}\n"
-            f"│ Auto-Close:  {ac_str}\n"
+            f"│ Margin:     *${margin:,.2f}* per pair (risiko)\n"
+            f"│ Leverage:   *{lev:.0f}x*\n"
+            f"│ Notional:   ~*${notional:,.2f}*/pair\n"
+            f"│ Total used: ~*${margin * 2:,.2f}* (2 pairs)\n"
+            f"│ Order type: {otype}\n"
+            f"│ Dryrun:     {'ON 🧪' if dryrun else 'OFF'}\n"
             f"└─────────────────────\n\n"
             f"💡 _`/pdx preview <btc> <eth>` untuk lihat qty_\n\n"
             f"*Commands:*\n"
             f"`/live on|off` | `/live margin <usd>`\n"
             f"`/live lev <n>` | `/live type market|limit`\n"
-            f"`/live dryrun on|off` | `/live mode normal|x`\n"
-            f"`/live autoclose on|off` — toggle auto-close"
+            f"`/live dryrun on|off` | `/live mode normal|x`"
         )
 
     elif sub == "on":
@@ -774,16 +762,14 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
         live_settings["active"] = True
         notional = margin * lev
         dr_note  = "\n🧪 *Dryrun mode ON* — tidak ada order sungguhan." if dryrun else ""
-        ac_note  = "\n⚠️ *Auto-Close OFF* — kamu harus close manual." if not ac_on else ""
         mode_val = live_settings.get("mode", "normal")
         mode_str = "🔵 NORMAL" if mode_val == "normal" else "🟣 MODE X"
         reply(
-            f"🟢 *Live trading AKTIF!*{dr_note}{ac_note}\n\n"
+            f"🟢 *Live trading AKTIF!*{dr_note}\n\n"
             f"Mode: *{mode_str}*\n"
             f"Margin: *${margin:,.2f}*/pair | Lev: *{lev:.0f}x*\n"
             f"Notional: ~*${notional:,.2f}*/pair\n"
-            f"Total margin 2 pair: *${margin * 2:,.2f}*\n"
-            f"Auto-Close: {'✅ ON' if ac_on else '❌ OFF'}\n\n"
+            f"Total margin 2 pair: *${margin * 2:,.2f}*\n\n"
             f"_Bot akan kirim order ke Paradex saat sinyal._\n\n"
             f"⚠️ Pastikan balance ≥ ${margin * 2:,.2f}!"
         )
@@ -833,6 +819,7 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
                 f"✅ *Leverage: {val:.0f}x*\n"
                 f"Notional: ~${notional_new:,.2f}/pair"
             )
+            # Apply ke exchange sekarang juga jika connected
             if _executor and _executor.is_ready():
                 eth_ok = _executor.set_leverage(MARKET_ETH, val)
                 btc_ok = _executor.set_leverage(MARKET_BTC, val)
@@ -865,42 +852,6 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
             reply("✅ *Dryrun mode OFF* — order sungguhan akan dikirim ke Paradex.")
         else:
             reply("Gunakan `on` atau `off`.")
-
-    # ── Auto-Close Toggle ← [NEW] ────────────────────────────────
-    elif sub == "autoclose":
-        if len(args) < 2:
-            ac_str = "✅ ON" if ac_on else "❌ OFF"
-            reply(
-                f"🔄 *Auto-Close sekarang: {ac_str}*\n\n"
-                f"*Penjelasan:*\n"
-                f"│ *ON*  → Bot otomatis eksekusi close order ke Paradex\n"
-                f"│        saat sinyal TP / TSL / EXIT / INVALID muncul.\n"
-                f"│ *OFF* → Bot hanya kirim notifikasi sinyal exit,\n"
-                f"│        tapi TIDAK eksekusi close order.\n"
-                f"│        Kamu harus close manual via `/pdx close`\n"
-                f"│        atau langsung di UI Paradex.\n\n"
-                f"Usage: `/live autoclose on|off`"
-            ); return
-        val = args[1].lower()
-        if val == "on":
-            live_settings["auto_close"] = True
-            reply(
-                "✅ *Auto-Close ON*\n\n"
-                "Bot akan otomatis eksekusi close order ke Paradex\n"
-                "saat sinyal TP / TSL / EXIT / INVALID terdeteksi."
-            )
-        elif val == "off":
-            live_settings["auto_close"] = False
-            reply(
-                "⚠️ *Auto-Close OFF*\n\n"
-                "Bot hanya mengirim notifikasi sinyal exit.\n"
-                "Kamu harus close posisi *secara manual* via:\n"
-                "• `/pdx close` — tutup semua posisi\n"
-                "• Atau langsung di UI Paradex\n\n"
-                "_Cocok kalau kamu ingin kontrol penuh kapan exit._"
-            )
-        else:
-            reply("Gunakan `on` atau `off`.\nContoh: `/live autoclose on`")
 
     elif sub == "mode":
         current_mode_val = live_settings.get("mode", "normal")
@@ -950,6 +901,5 @@ def handle_live_command(args: list, chat_id: str, send_reply_fn=None):
             "*Usage:*\n`/live` — status\n`/live on|off` — toggle\n"
             "`/live margin <usd>` | `/live lev <n>`\n"
             "`/live type market|limit` | `/live dryrun on|off`\n"
-            "`/live mode normal|x` — ganti mode trading\n"
-            "`/live autoclose on|off` — toggle auto-close posisi"
+            "`/live mode normal|x` — ganti mode trading"
         )
